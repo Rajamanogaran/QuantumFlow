@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+*.cover
+
+# Type checking
+.mypy_cache/
+
+# Distribution
+*.whl
+*.tar.gz
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Environment
+.env
+.venv/
+venv/
+
+# Build artifacts
+quantumflow/core/*.c
+quantumflow/simulation/*.c
+quantumflow/utils/*.c
