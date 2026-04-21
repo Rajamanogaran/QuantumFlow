@@ -1128,11 +1128,11 @@ QuantumFlow is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for
 If you use QuantumFlow in your research, please cite:
 
 ```bibtex
-@software{quantumflow2024,
+@software{quantumflow2026,
   title = {QuantumFlow: Advanced Quantum Computing Framework with TensorFlow/Keras Integration},
-  author = {QuantumFlow Team},
-  year = {2024},
+  author = {Mr M Rajamanogaran,manogaran248@gmail.com},
+  year = {2026},
   version = {0.1.0},
-  url = {https://github.com/quantumflow/quantumflow}
+  url = {https://github.com/Rajamanogaran/QuantumFlow.git}
 }
 ```
