@@ -817,9 +817,11 @@ class VQE:
         c: float = 0.1,
         alpha: float = 0.602,
         gamma: float = 0.101,
-        A: float = max_iterations / 10,
+        A: float = None,
     ) -> np.ndarray:
         """SPSA optimization."""
+        if A is None:
+            A = max_iterations / 10
         params = self.initial_params.copy()
         best_params = params.copy()
         best_energy = objective(params)

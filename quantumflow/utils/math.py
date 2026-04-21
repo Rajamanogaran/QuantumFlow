@@ -353,7 +353,7 @@ def random_unitary(n: int) -> np.ndarray:
     Z = (np.random.randn(n, n) + 1j * np.random.randn(n, n)) / np.sqrt(2)
     Q, R = np.linalg.qr(Z)
     D = np.diag(R) / np.abs(np.diag(R))
-    return Q @ D
+    return Q @ np.diag(D)
 
 
 def random_density_matrix(n: int, rank: Optional[int] = None) -> np.ndarray:
