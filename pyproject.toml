@@ -1,0 +1,93 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel", "Cython>=3.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quantumflow"
+version = "0.1.0"
+description = "Advanced Quantum Computing Framework with TensorFlow/Keras Integration for Quantum Neural Networks"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+authors = [
+    {name = "QuantumFlow Team"}
+]
+keywords = ["quantum", "computing", "neural-network", "tensorflow", "keras", "qiskit", "machine-learning", "qnn", "variational"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "tensorflow>=2.14.0",
+    "keras>=3.0.0",
+    "matplotlib>=3.7.0",
+    "networkx>=3.1",
+    "sympy>=1.12",
+    "tqdm>=4.65.0",
+    "joblib>=1.3.0",
+    "opt-einsum>=3.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-xdist>=3.3.0",
+    "mypy>=1.5.0",
+    "ruff>=0.1.0",
+    "black>=23.0",
+    "isort>=5.12.0",
+    "sphinx>=7.0",
+    "sphinx-rtd-theme>=2.0",
+]
+gpu = [
+    "tensorflow[and-cuda]>=2.14.0",
+    "cupy>=13.0",
+]
+all = [
+    "quantumflow[gpu,dev]",
+]
+
+[project.urls]
+Homepage = "https://github.com/quantumflow/quantumflow"
+Documentation = "https://quantumflow.readthedocs.io"
+Repository = "https://github.com/quantumflow/quantumflow"
+"Bug Tracker" = "https://github.com/quantumflow/quantumflow/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["quantumflow*"]
+
+[tool.setuptools.package-data]
+quantumflow = ["*.pyx", "*.pxd", "*.pxi"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
