@@ -111,3 +111,5 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # __init__.py files intentionally re-export the public API.
 "**/__init__.py" = ["F401"]
+# Examples introduce imports section by section (tutorial style).
+"examples/**" = ["E402"]

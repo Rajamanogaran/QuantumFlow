@@ -73,6 +73,7 @@ _simulation_names = [
 _safe_import("quantumflow.simulation.simulator",
              ["Simulator", "StatevectorSimulator", "DensityMatrixSimulator", "MPSimulator"],
              globals())
+_safe_import("quantumflow.simulation.simulator", ["BackendConfig"], globals())
 _safe_import("quantumflow.simulation.statevector", ["StatevectorBackend"], globals())
 _safe_import("quantumflow.simulation.density_matrix", ["DensityMatrixBackend"], globals())
 
