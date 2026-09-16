@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
@@ -406,7 +406,7 @@ class ParameterShiftOptimizer(QuantumOptimizer):
         # Central finite differences (fallback)
         grad = np.zeros_like(params)
         eps = 1e-7
-        base_loss = loss_fn(params)
+        loss_fn(params)
         for i in range(len(params)):
             params_plus = params.copy()
             params_plus[i] += eps
@@ -893,7 +893,7 @@ class QuantumSGD(QuantumOptimizer):
                 # Allocate shots proportionally to gradient magnitude
                 grad_magnitudes = np.abs(self._prev_grad)
                 total_mag = np.sum(grad_magnitudes) + 1e-10
-                n_params = len(params)
+                len(params)
                 shots_per_param = np.maximum(
                     (grad_magnitudes / total_mag * self._shots).astype(int),
                     self._min_shots,

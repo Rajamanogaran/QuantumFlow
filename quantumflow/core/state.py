@@ -33,19 +33,19 @@ import math
 import warnings
 from abc import ABC, abstractmethod
 from typing import (
-    Any,
-    Callable,
+    TYPE_CHECKING,
     Dict,
     List,
     Optional,
     Sequence,
-    Set,
     Tuple,
     Union,
-    overload,
 )
 
 import numpy as np
+
+if TYPE_CHECKING:  # pragma: no cover - import for type checking only
+    from quantumflow.core.circuit import QuantumCircuit
 
 __all__ = [
     "QuantumState",
@@ -561,6 +561,49 @@ class Statevector(QuantumState):
         """
         return DensityMatrix.from_statevector(self)
 
+    def to_circuit(self) -> "QuantumCircuit":
+        """Build a circuit that prepares this state from ``|0…0⟩``.
+
+        Computational-basis states are prepared exactly with ``X`` gates.
+        Arbitrary states use a Householder-reflection unitary whose first
+        column is the target state; such a circuit reproduces the state
+        exactly when the first amplitude is real and non-negative, and up
+        to a global phase otherwise (measurement statistics are identical).
+
+        Returns
+        -------
+        QuantumCircuit
+        """
+        from quantumflow.core.circuit import QuantumCircuit
+        from quantumflow.core.gate import UnitaryGate, XGate
+
+        n = self.num_qubits
+        circuit = QuantumCircuit(n)
+        amplitudes = np.asarray(self._data, dtype=complex).reshape(-1)
+
+        # Shortcut: basis state |i⟩ → X gates on the set bits.
+        nz = np.nonzero(np.abs(amplitudes) > 1e-12)[0]
+        if nz.size == 1:
+            i = int(nz[0])
+            for q in range(n):
+                if (i >> (n - 1 - q)) & 1:
+                    circuit.append(XGate(), [q])
+            return circuit
+
+        # Householder reflection mapping |0…0⟩ onto the state (up to phase).
+        phase = np.angle(amplitudes[0])
+        psi = amplitudes * np.exp(-1j * phase)
+        psi = psi / np.linalg.norm(psi)
+        if abs(psi[0] - 1.0) < 1e-12:
+            # Already |0…0⟩ up to global phase — nothing to do.
+            return circuit
+        d = psi.copy()
+        d[0] -= 1.0
+        w = d / np.linalg.norm(d)
+        U = np.eye(2 ** n, dtype=complex) - 2.0 * np.outer(w, np.conj(w))
+        circuit.append(UnitaryGate(U, name="Prep"), list(range(n)))
+        return circuit
+
     def reduced_density_matrix(
         self,
         qubits_to_keep: Sequence[int],
@@ -600,6 +643,23 @@ class Statevector(QuantumState):
     def __xor__(self, other: Statevector) -> Statevector:
         """``^`` operator as shorthand for tensor product."""
         return self.tensor(other)
+
+    # -- Scalar arithmetic ----------------------------------------------------
+
+    def __mul__(self, scalar: Union[complex, float, int]) -> "Statevector":
+        """Scale the amplitudes: ``scalar * |psi>``."""
+        if not isinstance(scalar, (int, float, complex, np.number)):
+            return NotImplemented
+        return Statevector(self._data * scalar, normalize=True, copy=False)
+
+    def __rmul__(self, scalar: Union[complex, float, int]) -> "Statevector":
+        return self.__mul__(scalar)
+
+    def __truediv__(self, scalar: Union[complex, float, int]) -> "Statevector":
+        """Divide the amplitudes by a scalar: ``|psi> / scalar``."""
+        if not isinstance(scalar, (int, float, complex, np.number)):
+            return NotImplemented
+        return Statevector(self._data / scalar, normalize=True, copy=False)
 
     # -- Linear algebra -------------------------------------------------------
 
@@ -1290,10 +1350,10 @@ def _partial_trace(
     col_trace = [q + n for q in traced]
 
     # Full list of axes
-    all_axes = list(range(2 * n))
+    list(range(2 * n))
 
     # Result axes: row_keep + col_keep
-    result_axes = row_keep + col_keep
+    row_keep + col_keep
 
     # Contract over (row_trace[i], col_trace[i]) pairs
     rho_reduced = rho_tensor.copy()

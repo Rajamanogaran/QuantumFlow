@@ -214,7 +214,6 @@ class BlochSphere:
         matplotlib.figure.Figure
         """
         import matplotlib.pyplot as plt
-        from mpl_toolkits.mplot3d import Axes3D
 
         fig = plt.figure(figsize=self.figsize)
         ax = fig.add_subplot(111, projection='3d')

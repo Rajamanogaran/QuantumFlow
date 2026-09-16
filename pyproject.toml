@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quantumflow"
-version = "0.1.0"
+version = "0.2.0"
 description = "Advanced Quantum Computing Framework with TensorFlow/Keras Integration for Quantum Neural Networks"
 readme = "README.md"
 license = {text = "Apache-2.0"}
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 authors = [
     {name = "QuantumFlow Team"}
 ]
@@ -19,17 +19,18 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Physics",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "numpy>=1.24.0",
+    "numpy>=1.24.0,<3",
     "scipy>=1.10.0",
-    "tensorflow>=2.14.0",
-    "keras>=3.0.0",
     "matplotlib>=3.7.0",
     "networkx>=3.1",
     "sympy>=1.12",
@@ -39,6 +40,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+tf = [
+    "tensorflow>=2.14.0",
+    "keras>=3.0.0",
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
@@ -49,13 +54,14 @@ dev = [
     "isort>=5.12.0",
     "sphinx>=7.0",
     "sphinx-rtd-theme>=2.0",
+    "cython>=3.0",
 ]
 gpu = [
     "tensorflow[and-cuda]>=2.14.0",
     "cupy>=13.0",
 ]
 all = [
-    "quantumflow[gpu,dev]",
+    "quantumflow[tf,gpu,dev]",
 ]
 
 [project.urls]
@@ -79,7 +85,7 @@ python_functions = ["test_*"]
 addopts = "-v --tb=short"
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.9"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
@@ -87,7 +93,21 @@ check_untyped_defs = true
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py39"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "W"]
+# E/W/F: pycodestyle + pyflakes (real errors and unused code).
+# The bulk legacy naming/import-order families (N, I) are opt-in
+# (`ruff check --select N,I`) — enforcing them retroactively on a
+# 36k-LOC codebase is pure churn.
+select = ["E", "F", "W"]
+ignore = [
+    "E501", # line length is enforced by the formatter where it matters
+    "E741", # ambiguous single-char names are idiomatic in quantum code (i, l)
+    "E701", # legacy single-line compound statements; mechanical churn to fix
+    "E702", # ditto
+]
+
+[tool.ruff.lint.per-file-ignores]
+# __init__.py files intentionally re-export the public API.
+"**/__init__.py" = ["F401"]

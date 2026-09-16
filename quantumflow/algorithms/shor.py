@@ -20,18 +20,12 @@ References:
 import math
 import numpy as np
 from typing import Optional, List, Tuple, Dict, Any
-from fractions import Fraction
 
-try:
-    from quantumflow.core.circuit import QuantumCircuit
-    from quantumflow.core.gate import (
-        HGate, XGate, CNOTGate, ControlledGate, SwapGate,
-        PhaseGate, Measurement, UnitaryGate,
-    )
-    from quantumflow.core.state import Statevector
-    from quantumflow.simulation.simulator import StatevectorSimulator
-except ImportError:
-    pass
+from quantumflow.core.circuit import QuantumCircuit
+from quantumflow.core.gate import (
+    Measurement, UnitaryGate,
+)
+from quantumflow.simulation.simulator import StatevectorSimulator
 
 
 def gcd(a: int, b: int) -> int:
@@ -127,32 +121,57 @@ class ModularExponentiation:
         """
         Construct the modular exponentiation circuit.
 
+        Circuit layout (MSB-first, matching the simulator's convention):
+
+        - Qubits ``0 .. n_count-1``: counting (control) register.
+        - Qubits ``n_count .. n_count+n_work-1``: work register holding the
+          modular-multiplication result.
+
+        The circuit implements the controlled unitaries of quantum phase
+        estimation for order finding: counting qubit ``i`` controls the
+        modular multiplication ``|y> -> |y * a^(2^i) mod N>`` on the work
+        register. Each multiplication is exact (a permutation matrix), so
+        the circuit is unitary and correct for any modulus that fits in the
+        work register.
+
         Returns
         -------
         QuantumCircuit
-            Circuit implementing modular exponentiation.
+            Circuit acting on ``n_count + n_work`` qubits.
         """
         n_count = self.n_counting_qubits
         n_work = self.n_work_qubits
-        total = n_count + 2 * n_work
+        total = n_count + n_work
         circuit = QuantumCircuit(total)
 
-        count_qubits = list(range(n_count))
-        work_qubits = list(range(n_count, n_count + n_work))
-        ancilla_qubits = list(range(n_count + n_work, total))
+        work_qubits = list(range(n_count, total))
 
-        # Pre-compute a^(2^i) mod N for each counting qubit
-        powers = [pow(self.base, 2**i, self.modulus) for i in range(n_count)]
-
+        # Controlled multiplication by a^(2^i) mod N for each counting qubit
         for i in range(n_count):
-            if powers[i] == 1:
+            multiplier = pow(self.base, 2 ** i, self.modulus)
+            if multiplier == 1:
                 continue  # Identity operation
-
-            # Controlled modular multiplication by a^(2^i)
-            self._controlled_mod_mult(circuit, powers[i], count_qubits[i],
-                                       work_qubits, ancilla_qubits)
+            self._controlled_mod_mult(circuit, multiplier, i, work_qubits)
 
         return circuit
+
+    def _mod_mult_permutation(self, multiplier: int) -> np.ndarray:
+        """Exact ``|y> -> |y * multiplier mod N>`` permutation matrix.
+
+        Positions ``y >= N`` are left unchanged. ``multiplier`` must be
+        coprime with ``N`` (guaranteed for ``a^(2^i) mod N`` with
+        ``gcd(a, N) = 1``), which makes the map a bijection on
+        ``{0, ..., N-1}``.
+        """
+        dim = 2 ** self.n_work_qubits
+        perm = np.zeros((dim, dim), dtype=np.complex128)
+        for y in range(dim):
+            if y < self.modulus:
+                target = (y * multiplier) % self.modulus
+            else:
+                target = y
+            perm[target, y] = 1.0
+        return perm
 
     def _controlled_mod_mult(
         self,
@@ -160,30 +179,32 @@ class ModularExponentiation:
         multiplier: int,
         control: int,
         target: List[int],
-        ancilla: List[int],
     ) -> None:
-        """Apply controlled modular multiplication."""
+        """Apply multiplication by ``multiplier`` mod N controlled on ``control``.
+
+        Implemented as a single block-diagonal unitary
+        ``diag(I, P_multiplier)`` on the (control, work) register, which is
+        an *exact* modular multiplication (the previous CCX-chain
+        construction did not compute modular arithmetic).
+        """
         n = len(target)
+        if n == 0:
+            return
 
         if multiplier == 0:
             for q in target:
                 circuit.x(q)
             return
 
-        # Encode multiplier in binary and apply controlled additions
-        for j in range(n):
-            if (multiplier >> j) & 1:
-                for k in range(n):
-                    circuit.ccx(control, target[j], target[(j + k) % n])
+        perm = self._mod_mult_permutation(multiplier)
+        dim = perm.shape[0]
 
-        # Simplified modular reduction (valid for small moduli)
-        # For larger moduli, need full quantum modular arithmetic
-        if self.modulus < (1 << n):
-            mod_bits = math.ceil(math.log2(self.modulus))
-            for j in range(mod_bits, n):
-                for k in range(mod_bits):
-                    if (self.modulus >> k) & 1:
-                        circuit.ccx(control, target[j], target[k])
+        # Block-diagonal controlled unitary: control qubit is the most
+        # significant qubit of the group.
+        block = np.eye(2 * dim, dtype=np.complex128)
+        block[dim:, dim:] = perm
+        circuit.append(UnitaryGate(block, name=f"CMul{multiplier}"),
+                       [control] + list(target))
 
 
 class ShorAlgorithm:
@@ -322,7 +343,7 @@ class ShorAlgorithm:
         # Number of counting qubits determines precision
         n_count = max(8, 2 * math.ceil(math.log2(self.N)))
         n_work = math.ceil(math.log2(self.N))
-        total_qubits = n_count + 2 * n_work
+        total_qubits = n_count + n_work
 
         # Build the order finding circuit
         circuit = QuantumCircuit(total_qubits)
@@ -333,20 +354,20 @@ class ShorAlgorithm:
         for q in count_qubits:
             circuit.h(q)
 
-        # Initialize work register to |1>
-        circuit.x(work_qubits[0])
+        # Initialize work register to |1> (integer 1 == last qubit set,
+        # MSB-first convention)
+        circuit.x(work_qubits[-1])
 
         # Apply controlled modular exponentiation
         mod_exp = ModularExponentiation(a, self.N, n_count)
         mod_exp_circuit = mod_exp.construct_circuit()
         circuit.compose(mod_exp_circuit, inplace=True)
 
-        # Apply inverse QFT on counting register
+        # Apply inverse QFT on the counting register only
         from quantumflow.algorithms.qft import InverseQFT
-        iqft = InverseQFT(n_count)
+        iqft = InverseQFT(n_count, do_swaps=False)
         iqft_circuit = iqft.construct_circuit()
-        # Map IQFT qubits to our counting qubits
-        circuit.compose(iqft_circuit, inplace=True)
+        circuit.compose(iqft_circuit, qubits=count_qubits, inplace=True)
 
         # Measure counting register
         for q in count_qubits:
@@ -359,7 +380,9 @@ class ShorAlgorithm:
         # Process measurement results to find the order
         best_r = None
         for bitstring, count in sorted(counts.items(), key=lambda x: -x[1]):
-            measured = int(bitstring[:n_count][::-1], 2)  # Reverse bit order
+            # Qubit 0 is the most significant bit; the swapped inverse QFT
+            # yields the phase as a binary fraction read MSB-first.
+            measured = int(bitstring[:n_count], 2)
             phase = measured / (2 ** n_count)
 
             if phase == 0:
@@ -430,7 +453,7 @@ class ShorAlgorithm:
 
         n_count = max(8, 2 * math.ceil(math.log2(self.N)))
         n_work = math.ceil(math.log2(self.N))
-        total_qubits = n_count + 2 * n_work
+        total_qubits = n_count + n_work
 
         circuit = QuantumCircuit(total_qubits)
         count_qubits = list(range(n_count))
@@ -439,16 +462,17 @@ class ShorAlgorithm:
         # Initialize
         for q in count_qubits:
             circuit.h(q)
-        circuit.x(work_qubits[0])
+        # Work register to |1> (integer 1 == last qubit set, MSB-first)
+        circuit.x(work_qubits[-1])
 
         # Modular exponentiation
         mod_exp = ModularExponentiation(a, self.N, n_count)
         circuit.compose(mod_exp.construct_circuit(), inplace=True)
 
-        # Inverse QFT
+        # Inverse QFT on the counting register only
         from quantumflow.algorithms.qft import InverseQFT
-        iqft = InverseQFT(n_count)
-        circuit.compose(iqft.construct_circuit(), inplace=True)
+        iqft = InverseQFT(n_count, do_swaps=False)
+        circuit.compose(iqft.construct_circuit(), qubits=count_qubits, inplace=True)
 
         # Measurement
         for q in count_qubits:

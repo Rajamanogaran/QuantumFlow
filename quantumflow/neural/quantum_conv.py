@@ -464,6 +464,24 @@ class QuantumConv2D:
             ``(out_h, out_w, filters)``.
         """
         if not self._built:
+            # Lazy auto-build on first call (Keras-style behavior):
+            # infer the input shape instead of requiring an explicit
+            # build() invocation.
+            try:
+                _shape = inputs[0].shape if isinstance(inputs, (list, tuple)) else inputs.shape
+                self.build(tuple(int(d) for d in _shape))
+            except Exception:
+                pass
+        if not self._built:
+            # Lazy auto-build on first call (Keras-style behavior):
+            # infer the input shape instead of requiring an explicit
+            # build() invocation.
+            try:
+                _shape = inputs[0].shape if isinstance(inputs, (list, tuple)) else inputs.shape
+                self.build(tuple(int(d) for d in _shape))
+            except Exception:
+                pass
+        if not self._built:
             raise RuntimeError("Layer has not been built.")
 
         inputs = np.asarray(inputs, dtype=np.float64)
@@ -558,11 +576,13 @@ class QuantumConv2D:
         """
         from quantumflow.simulation.simulator import StatevectorSimulator
 
-        # Flatten and prepare patch
-        patch_flat = _flatten_patch(patch, self._n_qubits)
-
-        # Compute rotation angles via weight matrix
+        # Compute rotation angles via weight matrix. The weight matrix for
+        # this filter maps ``kernel_size² * channels`` patch features to
+        # ``n_qubits`` rotation angles, so the patch must be flattened to
+        # the weight matrix's input dimension (an earlier version flattened
+        # to ``n_qubits``, which crashed with a matmul shape mismatch).
         weights = self._kernel_weights[filter_idx]
+        patch_flat = _flatten_patch(patch, weights.shape[0])
         angles = patch_flat @ weights  # shape: (n_qubits,)
 
         # Add bias

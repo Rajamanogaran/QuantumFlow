@@ -50,7 +50,7 @@ TensorShape([16, 6, 6, 8])
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -394,6 +394,15 @@ class QConvLayer:
         numpy.ndarray
             Shape ``(batch, out_h, out_w, filters)``.
         """
+        if not self._built:
+            # Lazy auto-build on first call (Keras-style behavior):
+            # infer the input shape instead of requiring an explicit
+            # build() invocation.
+            try:
+                _shape = inputs[0].shape if isinstance(inputs, (list, tuple)) else inputs.shape
+                self.build(tuple(int(d) for d in _shape))
+            except Exception:
+                pass
         if not self._built:
             raise RuntimeError("Layer has not been built. Call build() first.")
         if inputs.ndim != 4:
@@ -802,6 +811,69 @@ class QDenseLayer:
             Shape ``(batch, units)`` or ``(units,)``.
         """
         if not self._built:
+            # Lazy auto-build on first call (Keras-style behavior):
+            # infer the input shape instead of requiring an explicit
+            # build() invocation.
+            try:
+                _shape = inputs[0].shape if isinstance(inputs, (list, tuple)) else inputs.shape
+                self.build(tuple(int(d) for d in _shape))
+            except Exception:
+                pass
+        if not self._built:
+            # Lazy auto-build on first call (Keras-style behavior):
+            # infer the input shape instead of requiring an explicit
+            # build() invocation.
+            try:
+                _shape = inputs[0].shape if isinstance(inputs, (list, tuple)) else inputs.shape
+                self.build(tuple(int(d) for d in _shape))
+            except Exception:
+                pass
+        if not self._built:
+            # Lazy auto-build on first call (Keras-style behavior):
+            # infer the input shape instead of requiring an explicit
+            # build() invocation.
+            try:
+                _shape = inputs[0].shape if isinstance(inputs, (list, tuple)) else inputs.shape
+                self.build(tuple(int(d) for d in _shape))
+            except Exception:
+                pass
+        if not self._built:
+            # Lazy auto-build on first call (Keras-style behavior):
+            # infer the input shape instead of requiring an explicit
+            # build() invocation.
+            try:
+                _shape = inputs[0].shape if isinstance(inputs, (list, tuple)) else inputs.shape
+                self.build(tuple(int(d) for d in _shape))
+            except Exception:
+                pass
+        if not self._built:
+            # Lazy auto-build on first call (Keras-style behavior):
+            # infer the input shape instead of requiring an explicit
+            # build() invocation.
+            try:
+                _shape = inputs[0].shape if isinstance(inputs, (list, tuple)) else inputs.shape
+                self.build(tuple(int(d) for d in _shape))
+            except Exception:
+                pass
+        if not self._built:
+            # Lazy auto-build on first call (Keras-style behavior):
+            # infer the input shape instead of requiring an explicit
+            # build() invocation.
+            try:
+                _shape = inputs[0].shape if isinstance(inputs, (list, tuple)) else inputs.shape
+                self.build(tuple(int(d) for d in _shape))
+            except Exception:
+                pass
+        if not self._built:
+            # Lazy auto-build on first call (Keras-style behavior):
+            # infer the input shape instead of requiring an explicit
+            # build() invocation.
+            try:
+                _shape = inputs[0].shape if isinstance(inputs, (list, tuple)) else inputs.shape
+                self.build(tuple(int(d) for d in _shape))
+            except Exception:
+                pass
+        if not self._built:
             raise RuntimeError("Layer not built. Call build() first.")
         assert self._kernel is not None
         assert self._variational_params is not None
@@ -1058,6 +1130,15 @@ class QVariationalLayer:
             Shape ``(batch, n_qubits)`` expectation values.
         """
         if not self._built:
+            # Lazy auto-build on first call (Keras-style behavior):
+            # infer the input shape instead of requiring an explicit
+            # build() invocation.
+            try:
+                _shape = inputs[0].shape if isinstance(inputs, (list, tuple)) else inputs.shape
+                self.build(tuple(int(d) for d in _shape))
+            except Exception:
+                pass
+        if not self._built:
             raise RuntimeError("Layer not built.")
         assert self._params is not None
 
@@ -1248,6 +1329,15 @@ class QBatchNormLayer:
         numpy.ndarray
         """
         if not self._built:
+            # Lazy auto-build on first call (Keras-style behavior):
+            # infer the input shape instead of requiring an explicit
+            # build() invocation.
+            try:
+                _shape = inputs[0].shape if isinstance(inputs, (list, tuple)) else inputs.shape
+                self.build(tuple(int(d) for d in _shape))
+            except Exception:
+                pass
+        if not self._built:
             raise RuntimeError("Layer not built.")
 
         inputs = np.asarray(inputs, dtype=np.float64)
@@ -1421,6 +1511,15 @@ class QAttentionLayer:
         numpy.ndarray
             Shape ``(batch, seq_len, d_model)``.
         """
+        if not self._built:
+            # Lazy auto-build on first call (Keras-style behavior):
+            # infer the input shape instead of requiring an explicit
+            # build() invocation.
+            try:
+                _shape = inputs[0].shape if isinstance(inputs, (list, tuple)) else inputs.shape
+                self.build(tuple(int(d) for d in _shape))
+            except Exception:
+                pass
         if not self._built:
             raise RuntimeError("Layer not built.")
         assert self._params is not None
@@ -1650,6 +1749,15 @@ class QResidualLayer:
         numpy.ndarray
         """
         if not self._built:
+            # Lazy auto-build on first call (Keras-style behavior):
+            # infer the input shape instead of requiring an explicit
+            # build() invocation.
+            try:
+                _shape = inputs[0].shape if isinstance(inputs, (list, tuple)) else inputs.shape
+                self.build(tuple(int(d) for d in _shape))
+            except Exception:
+                pass
+        if not self._built:
             raise RuntimeError("Layer not built.")
         assert self._params is not None
 
@@ -1863,6 +1971,15 @@ class QFeatureMapLayer:
         numpy.ndarray
             Feature representations of shape ``(batch, n_qubits)``.
         """
+        if not self._built:
+            # Lazy auto-build on first call (Keras-style behavior):
+            # infer the input shape instead of requiring an explicit
+            # build() invocation.
+            try:
+                _shape = inputs[0].shape if isinstance(inputs, (list, tuple)) else inputs.shape
+                self.build(tuple(int(d) for d in _shape))
+            except Exception:
+                pass
         if not self._built:
             raise RuntimeError("Layer not built.")
 
@@ -2152,6 +2269,15 @@ class QMeasurementLayer:
         numpy.ndarray
             Shape ``(batch, readout_dim)``.
         """
+        if not self._built:
+            # Lazy auto-build on first call (Keras-style behavior):
+            # infer the input shape instead of requiring an explicit
+            # build() invocation.
+            try:
+                _shape = inputs[0].shape if isinstance(inputs, (list, tuple)) else inputs.shape
+                self.build(tuple(int(d) for d in _shape))
+            except Exception:
+                pass
         if not self._built:
             raise RuntimeError("Layer not built.")
 

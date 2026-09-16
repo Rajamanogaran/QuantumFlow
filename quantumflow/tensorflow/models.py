@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -1206,7 +1206,7 @@ class QAutoencoder:
                     base_state = self._encode(data)
                     base_recon = self._decode(base_state)
                     target = yb[b][:self._n_qubits] if yb.shape[-1] >= self._n_qubits else yb[b]
-                    base_loss = _mse_loss(base_recon, target) + 0.5 * self._trash_loss(base_state)
+                    _mse_loss(base_recon, target) + 0.5 * self._trash_loss(base_state)
 
                     for i in range(len(self._encoder_params)):
                         p_plus = self._encoder_params.copy()
@@ -1243,7 +1243,7 @@ class QAutoencoder:
                 for b in range(len(xb)):
                     data = np.clip(xb[b][:self._n_qubits], -_PI, _PI)
                     state = self._encode(data)
-                    recon = self._decode(state)
+                    self._decode(state)
                     target = yb[b][:self._n_qubits] if yb.shape[-1] >= self._n_qubits else yb[b]
 
                     for i in range(len(self._decoder_params)):
@@ -1540,7 +1540,7 @@ class QGAN:
                         b = self._disc_biases[layer_idx]
 
                         w_grad = np.zeros_like(w)
-                        b_grad = np.zeros_like(b)
+                        np.zeros_like(b)
 
                         for p_i in range(min(w.size, 50)):  # Subsample for speed
                             pi, pj = divmod(p_i, w.shape[1]) if w.ndim == 2 else (0, p_i)

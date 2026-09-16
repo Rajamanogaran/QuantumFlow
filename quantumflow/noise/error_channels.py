@@ -7,7 +7,7 @@ trace-preserving (CPTP) maps via Kraus operators.
 """
 
 import numpy as np
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List
 from abc import ABC, abstractmethod
 
 
@@ -129,8 +129,7 @@ class DepolarizingChannel(ErrorChannel):
             # Multi-qubit: depolarize each qubit independently
             for q in range(self.n_qubits):
                 for P in paulis:
-                    op = np.eye(d, dtype=np.complex128)
-                    idx = [[1, 0], [0, 1]]
+                    np.eye(d, dtype=np.complex128)
                     op_p = np.kron(np.kron(np.eye(2**q, dtype=np.complex128), P),
                                    np.eye(2**(self.n_qubits - q - 1), dtype=np.complex128))
                     kraus.append(sqrt_p * op_p)

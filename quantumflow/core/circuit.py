@@ -29,10 +29,8 @@ from __future__ import annotations
 import copy
 import math
 import random
-import warnings
 from typing import (
     Any,
-    Callable,
     Dict,
     List,
     Optional,
@@ -40,7 +38,6 @@ from typing import (
     Set,
     Tuple,
     Union,
-    overload,
 )
 
 import numpy as np
@@ -55,14 +52,12 @@ from quantumflow.core.gate import (
     DCXGate,
     ESCGate,
     Gate,
-    GlobalPhaseGate,
     HGate,
     ISwapGate,
     MCXGate,
     MCZGate,
     Measurement,
     MSGate,
-    ParameterizedGate,
     PhaseGate,
     RXXGate,
     RXGate,
@@ -82,16 +77,12 @@ from quantumflow.core.gate import (
     ToffoliGate,
     U2Gate,
     U3Gate,
-    UGate,
-    UnitaryGate,
     XGate,
     XYGate,
     YGate,
     ZGate,
     CCZGate,
-    CompositeGate,
     CPhaseGate,
-    FredkinGate,
 )
 from quantumflow.core.operation import (
     Barrier,
@@ -101,9 +92,7 @@ from quantumflow.core.operation import (
 from quantumflow.core.register import (
     ClassicalRegister,
     QuantumRegister,
-    Register,
 )
-from quantumflow.core.state import Statevector
 
 __all__ = [
     "QuantumCircuit",
@@ -528,6 +517,16 @@ class QuantumCircuit:
         for q, c in zip(qubits, cbits):
             if q < 0 or q >= self.num_qubits:
                 raise ValueError(f"Qubit index {q} out of range [0, {self.num_qubits})")
+
+        # Auto-create a classical register when none exists (or when it is
+        # too small) so that ``qc.measure([0, 1], [0, 1])`` works out of the
+        # box, mirroring the README quick-start example.
+        if cbits and max(cbits) >= self.num_clbits:
+            needed = max(cbits) + 1
+            missing = needed - self.num_clbits
+            self.add_register(ClassicalRegister(missing, name=f"c{len(self._cregs)}"))
+
+        for q, c in zip(qubits, cbits):
             if c < 0 or c >= self.num_clbits:
                 raise ValueError(f"Classical bit index {c} out of range [0, {self.num_clbits})")
 
@@ -618,7 +617,12 @@ class QuantumCircuit:
 
     # -- Circuit composition --------------------------------------------------
 
-    def compose(self, other: QuantumCircuit, inplace: bool = False) -> QuantumCircuit:
+    def compose(
+        self,
+        other: QuantumCircuit,
+        qubits: Optional[Sequence[int]] = None,
+        inplace: bool = False,
+    ) -> QuantumCircuit:
         """Compose with another circuit (sequential concatenation).
 
         ``self.compose(other)`` produces ``other ∘ self`` (other runs *after* self).
@@ -626,6 +630,11 @@ class QuantumCircuit:
         Parameters
         ----------
         other : QuantumCircuit
+        qubits : sequence of int, optional
+            Map ``other``'s qubits onto these qubits of ``self``. Element
+            ``i`` is the qubit of ``self`` on which qubit ``i`` of ``other``
+            acts. If ``None`` (default), the circuits must have equal width
+            and the identity mapping is used.
         inplace : bool
             If ``True``, modify this circuit. Otherwise return a new one.
 
@@ -633,10 +642,26 @@ class QuantumCircuit:
         -------
         QuantumCircuit
         """
-        if self.num_qubits != other.num_qubits:
-            raise ValueError(
-                f"Circuit widths must match: {self.num_qubits} vs {other.num_qubits}"
-            )
+        if qubits is None:
+            if self.num_qubits != other.num_qubits:
+                raise ValueError(
+                    f"Circuit widths must match: {self.num_qubits} vs {other.num_qubits}"
+                )
+            qubit_map = list(range(other.num_qubits))
+        else:
+            qubit_map = list(qubits)
+            if len(qubit_map) != other.num_qubits:
+                raise ValueError(
+                    f"qubits map has length {len(qubit_map)}, but `other` acts "
+                    f"on {other.num_qubits} qubits"
+                )
+            if len(set(qubit_map)) != len(qubit_map):
+                raise ValueError("qubits map contains duplicate qubit indices")
+            for q in qubit_map:
+                if q < 0 or q >= self.num_qubits:
+                    raise ValueError(
+                        f"Qubit index {q} out of range [0, {self.num_qubits})"
+                    )
 
         target = self if inplace else self.copy()
 
@@ -644,7 +669,7 @@ class QuantumCircuit:
         for op in other._data:
             new_op = Operation(
                 gate=op.gate,
-                qubits=op.qubits,
+                qubits=[qubit_map[q] for q in op.qubits],
                 params=op.params,
                 condition=op.condition,
                 label=op.label,
@@ -783,94 +808,31 @@ class QuantumCircuit:
         if k == 0:
             return np.eye(dim, dtype=np.complex128)
 
-        # Build full matrix via iterative Kronecker products
-        # Sort qubits and figure out the order
-        sorted_indices = sorted(range(n), key=lambda i: (
-            qubits.index(i) if i in qubits else float('inf')
-        ))
+        gate = np.asarray(gate_matrix, dtype=np.complex128)
+        gdim = 1 << k
 
-        # Build as a product of single-qubit operators
-        full = np.eye(1, dtype=np.complex128)
-        gate_qubits_sorted = sorted(qubits)
-
-        # Map from position in sorted qubit list to position in gate matrix
-        for q in range(n):
-            if q in qubits:
-                # Find which position this qubit has in the gate
-                pos = qubits.index(q)
-                gate_dim = 1 << k
-                # Extract single-qubit component from gate
-                # This is complex for multi-qubit gates; use the embedding approach
-                pass
-            else:
-                full = np.kron(full, np.eye(2, dtype=np.complex128))
-
-        # Alternative: use the permutation approach
-        # Sort the qubits the gate acts on and permute the gate matrix
-        # Then tensor with identities in the correct positions
-
-        # Simpler approach: build via repeated Kronecker products
-        # Work from right to left
-        qubit_list = list(range(n))
-        result = None
-
-        # Build factor list: for each qubit from 0 to n-1, either I or part of gate
-        # For a multi-qubit gate, this requires splitting the gate matrix
-        # Use the swap-based approach instead
-
-        # Most efficient: use the general method
-        # Expand gate from acting on `qubits` to acting on all `n` qubits
-        full_matrix = np.eye(dim, dtype=np.complex128)
-
-        # We'll use the reshape-and-multiply approach
-        # For each qubit the gate acts on, we apply the correct operations
-
-        # Actually, the simplest correct approach:
-        # Use the identity: U_full = S^† (U ⊗ I) S where S is a permutation
-        # that brings the target qubits to the front
-
-        # Step 1: Determine permutation to bring target qubits to positions 0..k-1
-        perm = list(qubits) + [q for q in range(n) if q not in qubits]
-        inv_perm = [0] * n
-        for i, p in enumerate(perm):
-            inv_perm[p] = i
-
-        # Step 2: Build permuted space: U ⊗ I_(n-k)
-        gate_on_front = np.kron(gate_matrix, np.eye(1 << (n - k), dtype=np.complex128))
-
-        # Step 3: Apply permutation matrices
-        perm_matrix = self._permutation_matrix(perm, n)
-        inv_perm_matrix = self._permutation_matrix(inv_perm, n)
-
-        return inv_perm_matrix @ gate_on_front @ perm_matrix
-
-    def _permutation_matrix(self, perm: List[int], n: int) -> np.ndarray:
-        """Build the permutation matrix for qubit reordering.
-
-        Parameters
-        ----------
-        perm : list of int
-            perm[i] = which original qubit goes to position i.
-        n : int
-            Number of qubits.
-
-        Returns
-        -------
-        numpy.ndarray
-            Unitary permutation matrix.
-        """
-        dim = 1 << n
-        P = np.zeros((dim, dim), dtype=np.complex128)
-        for i in range(dim):
-            # i in binary has bits for the permuted ordering
-            # Convert to original ordering
-            original = 0
-            for pos in range(n):
-                original_qubit = perm[pos]
-                bit = (i >> (n - 1 - pos)) & 1
-                original |= (bit << (n - 1 - original_qubit))
-            P[original, i] = 1.0
-        return P
+        # Direct index construction (MSB-first: qubit 0 is the most
+        # significant bit). For each basis column, the gate acts on the
+        # bits of ``qubits``; all other bits pass through unchanged.
+        # Qubit i of the gate matrix maps onto ``qubits[i]``.
+        full = np.zeros((dim, dim), dtype=np.complex128)
+        for col in range(dim):
+            # Target-qubit input index within the gate
+            t_in = 0
+            for q in qubits:
+                t_in = (t_in << 1) | ((col >> (n - 1 - q)) & 1)
+            # Scatter each gate output row back onto the full register
+            for row_gate in range(gdim):
+                row = col
+                for j in range(k):
+                    q = qubits[j]
+                    bit = (row_gate >> (k - 1 - j)) & 1
+                    if bit:
+                        row |= 1 << (n - 1 - q)
+                    else:
+                        row &= ~(1 << (n - 1 - q))
+                full[row, col] = gate[row_gate, t_in]
+        return full
 
     # -- Circuit statistics ---------------------------------------------------
 
@@ -1259,7 +1221,7 @@ class QuantumCircuit:
                     if other_q == ctrl and other_q == tgt:
                         rows[other_q].append(f"──{gate_label}──")
                     elif other_q == ctrl:
-                        rows[other_q].append(f"──■─────")
+                        rows[other_q].append("──■─────")
                     elif other_q == tgt:
                         rows[other_q].append(f"──{gate_label}──")
                     else:

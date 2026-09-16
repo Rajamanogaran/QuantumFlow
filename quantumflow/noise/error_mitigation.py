@@ -9,7 +9,6 @@ without requiring full quantum error correction.
 import numpy as np
 from typing import List, Optional, Dict, Tuple, Any, Callable
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 
 
 class ErrorMitigation(ABC):

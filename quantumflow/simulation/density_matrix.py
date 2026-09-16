@@ -37,7 +37,6 @@ Typical usage::
 from __future__ import annotations
 
 import math
-import warnings
 from typing import (
     Any,
     Dict,
@@ -51,7 +50,7 @@ from typing import (
 import numpy as np
 
 from quantumflow.core.circuit import QuantumCircuit
-from quantumflow.core.gate import Gate, Measurement, ParameterizedGate
+from quantumflow.core.gate import Gate, Measurement
 from quantumflow.core.operation import Barrier, Operation, Reset
 from quantumflow.core.state import DensityMatrix as CoreDensityMatrix
 from quantumflow.core.state import Statevector
@@ -353,7 +352,7 @@ class DensityMatrixBackend:
             self._float_dtype = _FLOAT_DTYPE
 
         self._rng = np.random.default_rng(seed)
-        self._gate_cache: Dict[Tuple[str, Tuple[float, ...]], np.ndarray] = {}
+        self._gate_cache: Dict[Tuple[str, Tuple[float, ...]], Tuple[Gate, np.ndarray]] = {}
 
     # ------------------------------------------------------------------
     # State construction
@@ -437,15 +436,18 @@ class DensityMatrixBackend:
     ) -> np.ndarray:
         """Retrieve (and cache) the gate matrix."""
         cache_key = (gate.name, params)
-        if cache_key in self._gate_cache:
-            return self._gate_cache[cache_key]
+        cached = self._gate_cache.get(cache_key)
+        if cached is not None:
+            cached_gate, cached_mat = cached
+            if cached_gate is gate:
+                return cached_mat
 
         if params:
             mat = gate.to_matrix(*params)
         else:
             mat = gate.matrix
         mat = mat.astype(self._dtype, copy=False)
-        self._gate_cache[cache_key] = mat
+        self._gate_cache[cache_key] = (gate, mat)
         return mat
 
     # ------------------------------------------------------------------
@@ -679,7 +681,7 @@ class DensityMatrixBackend:
         qubits = list(qubits)
         n = num_qubits
         k = len(qubits)
-        dim = rho.shape[0]
+        rho.shape[0]
 
         # Compute marginal probabilities via partial trace over complement
         # Use the computational basis projectors
@@ -733,7 +735,7 @@ class DensityMatrixBackend:
             Shape ``(2**n, 2**n)``.
         """
         k = len(qubits)
-        dim = 1 << n
+        1 << n
 
         # Build computational basis state on target qubits
         target_state = np.zeros(1 << k, dtype=self._dtype)
@@ -779,10 +781,10 @@ class DensityMatrixBackend:
         if not trace_out:
             return rho.copy()
         if not keep:
-            dim = 1 << n
+            1 << n
             return np.array([[np.trace(rho)]], dtype=self._dtype)
 
-        k = len(keep)
+        len(keep)
         reduced = _partial_trace_impl(rho, n, keep, trace_out)
         return reduced
 
@@ -1034,7 +1036,7 @@ class DensityMatrixBackend:
         -------
         numpy.ndarray
         """
-        dim = rho.shape[0]
+        rho.shape[0]
         for q in qubits:
             # Projector for |0⟩ on qubit q
             proj = self._build_projector(0, [q], n)
@@ -1099,17 +1101,30 @@ class DensityMatrixBackend:
         if k == 0:
             return np.eye(dim, dtype=self._dtype)
 
-        perm = list(qubits) + [q for q in range(n) if q not in qubits]
-        inv_perm = [0] * n
-        for i, p in enumerate(perm):
-            inv_perm[p] = i
+        op = np.asarray(operator, dtype=self._dtype)
+        gdim = 1 << k
 
-        gate_on_front = np.kron(
-            operator, np.eye(1 << (n - k), dtype=self._dtype)
-        )
-        P = _permutation_matrix(perm, n)
-        P_inv = _permutation_matrix(inv_perm, n)
-        return P_inv @ gate_on_front @ P
+        # Direct index construction (MSB-first: qubit 0 is the most
+        # significant bit). Qubit i of the operator maps onto qubits[i].
+        # The previous S† (O ⊗ I) S construction used P(inv_perm) as the
+        # inverse permutation, which is not P(perm)⁻¹ in general and
+        # mis-placed gates on non-contiguous qubit lists.
+        full = np.zeros((dim, dim), dtype=self._dtype)
+        for col in range(dim):
+            t_in = 0
+            for q in qubits:
+                t_in = (t_in << 1) | ((col >> (n - 1 - q)) & 1)
+            for row_gate in range(gdim):
+                row = col
+                for j in range(k):
+                    q = qubits[j]
+                    bit = (row_gate >> (k - 1 - j)) & 1
+                    if bit:
+                        row |= 1 << (n - 1 - q)
+                    else:
+                        row &= ~(1 << (n - 1 - q))
+                full[row, col] = op[row_gate, t_in]
+        return full
 
     # ------------------------------------------------------------------
     # Utility

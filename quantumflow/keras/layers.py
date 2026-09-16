@@ -53,7 +53,6 @@ from typing import (
     Dict,
     List,
     Optional,
-    Sequence,
     Tuple,
     Union,
 )
@@ -402,6 +401,137 @@ def _get_entanglement_edges(
         for i in range(1, n_qubits):
             edges.append((0, i))
     return edges
+
+
+def _quantum_output_dim(observable: str, n_qubits: int) -> int:
+    """Dimension of the expectation vector returned by ``_measure_expectation``."""
+    if observable in ("zz", "xx"):
+        return max(n_qubits - 1, 1)
+    if observable == "mixed":
+        return n_qubits + 2 * max(n_qubits - 1, 0)
+    return n_qubits
+
+
+def _hybrid_quantum_bridge(eval_fn, angles, var_params, out_dim: int, eps: float = 1e-3):
+    """Bridge a numpy quantum evaluation into a (differentiable) Keras graph.
+
+    Keras 3 traces ``Layer.call`` under ``tf.function`` during ``fit()``,
+    where converting tensors or variables to numpy is unavailable — the
+    previous implementations of ``KerasQDense.call`` /
+    ``KerasQVariational.call`` crashed with
+    ``NotImplementedError: numpy() is only available when eager execution
+    is enabled``.
+
+    Strategy: run the numpy evaluation (circuits + expectation values) on
+    *detached* snapshots through the backend runtime — a ``tf.py_function``
+    under the TensorFlow backend — and reconnect the result to the graph
+    with a first-order local linearisation
+
+        Q(a, v) ≈ Q(a0, v0) + Ja(a0, v0)·(a − a0) + Jv(a0, v0)·(v − v0),
+
+    where the Jacobians ``Ja``/``Jv`` are estimated inside the same
+    runtime call by central finite differences.  ``a0``/``v0`` are
+    stop-gradient constants, so the correction terms are the only
+    differentiable path and gradients flow exactly (as ``eps → 0``) into
+    the classical weights that produce ``angles`` and into
+    ``var_params``.  Outside a graph trace the evaluation runs directly,
+    exactly as before.
+
+    Parameters
+    ----------
+    eval_fn : callable
+        ``eval_fn(angles_np, var_np) -> np.ndarray`` of shape
+        ``(batch, out_dim)``.  Pure numpy.
+    angles : keras.KerasTensor
+        Symbolic or eager tensor of shape ``(batch, ...)``.
+    var_params : keras.Variable
+        Trainable variational parameters.
+    out_dim : int
+        Last dimension of ``eval_fn`` output.
+    eps : float
+        Finite-difference step for the Jacobians.
+
+    Returns
+    -------
+    keras.KerasTensor
+        ``(batch, out_dim)`` tensor.
+    """
+    import numpy as np
+    from keras import ops
+
+    try:
+        import tensorflow as tf
+        in_graph = not tf.executing_eagerly()
+    except ImportError:
+        tf = None
+        in_graph = False
+
+    if not in_graph:
+        a_np = np.asarray(ops.convert_to_numpy(angles), dtype=np.float64)
+        v_np = np.asarray(ops.convert_to_numpy(var_params), dtype=np.float64)
+        out = np.asarray(eval_fn(a_np, v_np), dtype=np.float32)
+        return ops.convert_to_tensor(out, dtype="float32")
+
+    # ---- graph trace (TF backend): bridge through runtime ----------------
+    a0 = tf.stop_gradient(angles)
+    vt = tf.convert_to_tensor(var_params)
+    v0 = tf.stop_gradient(vt)
+
+    angle_shape = angles.shape
+    flat = 1
+    for d in angle_shape[1:]:
+        flat *= int(d)
+    vflat = 1
+    for d in vt.shape:
+        vflat *= int(d)
+    width = out_dim + flat * out_dim + vflat * out_dim
+
+    def _fn(a_num, v_num):
+        a = np.asarray(a_num, dtype=np.float64)
+        v = np.asarray(v_num, dtype=np.float64)
+        batch_n = a.shape[0]
+        base = np.asarray(eval_fn(a, v), dtype=np.float64).reshape(batch_n, out_dim)
+
+        # Jacobian wrt angles (central differences)
+        ja = np.zeros((batch_n, flat, out_dim))
+        af = a.reshape(batch_n, flat)
+        for i in range(flat):
+            ap = af.copy()
+            ap[:, i] += eps
+            am = af.copy()
+            am[:, i] -= eps
+            ja[:, i, :] = (
+                np.asarray(eval_fn(ap.reshape(a.shape), v)).reshape(batch_n, out_dim)
+                - np.asarray(eval_fn(am.reshape(a.shape), v)).reshape(batch_n, out_dim)
+            ) / (2.0 * eps)
+
+        # Jacobian wrt variational parameters
+        jv = np.zeros((batch_n, vflat, out_dim))
+        vf = v.reshape(-1)
+        for i in range(vflat):
+            vp = vf.copy()
+            vp[i] += eps
+            vm = vf.copy()
+            vm[i] -= eps
+            jv[:, i, :] = (
+                np.asarray(eval_fn(a, vp.reshape(v.shape))).reshape(batch_n, out_dim)
+                - np.asarray(eval_fn(a, vm.reshape(v.shape))).reshape(batch_n, out_dim)
+            ) / (2.0 * eps)
+
+        combined = np.concatenate(
+            [base, ja.reshape(batch_n, -1), jv.reshape(batch_n, -1)], axis=1
+        )
+        return combined.astype(np.float32)
+
+    res = tf.py_function(_fn, [a0, v0], tf.float32)
+    res.set_shape([None, width])
+    base = res[:, :out_dim]
+    ja = tf.reshape(res[:, out_dim : out_dim + flat * out_dim], [-1, flat, out_dim])
+    jv = tf.reshape(res[:, out_dim + flat * out_dim :], [-1, vflat, out_dim])
+
+    da = tf.reshape(angles - a0, [-1, flat, 1])
+    dv = tf.reshape(vt - v0, [-1, vflat, 1])
+    return base + tf.reduce_sum(ja * da, axis=1) + tf.reduce_sum(jv * dv, axis=1)
 
 
 def _check_keras_available() -> None:
@@ -821,8 +951,30 @@ class KerasQDense(Layer):
             return self.n_qubits + 2 * max(self.n_qubits - 1, 0)
         return self.n_qubits
 
+    def _evaluate_quantum(
+        self, angles_np: np.ndarray, var_np: np.ndarray
+    ) -> np.ndarray:
+        """Numpy batch evaluation: expectation values per sample."""
+        quantum_outputs = []
+        for b in range(angles_np.shape[0]):
+            qc = _build_quantum_circuit(
+                self.n_qubits,
+                angles_np[b],
+                var_np,
+                self.n_layers,
+                self.encoding,
+                self.entanglement,
+            )
+            exp_vals = _measure_expectation(
+                qc, self.observable, self.n_qubits, self._get_simulator()
+            )
+            quantum_outputs.append(exp_vals)
+        return np.stack(quantum_outputs, axis=0)
+
     def call(self, inputs: Any) -> Any:
         x = ops.convert_to_tensor(inputs, dtype="float32")
+        if len(x.shape) == 1:
+            x = ops.reshape(x, [1, -1])
 
         # Linear projection: (batch, input_dim) → (batch, n_qubits)
         angles = ops.matmul(x, self._kernel)
@@ -832,37 +984,24 @@ class KerasQDense(Layer):
         # Clip angles to [-π, π]
         angles = ops.clip(angles, -_PI, _PI)
 
-        # Execute quantum circuit per sample
-        var_params_np = ops.convert_to_numpy(self._var_params)
-        angles_np = ops.convert_to_numpy(angles)
-
-        batch_size = angles_np.shape[0]
-        quantum_outputs = []
-        for b in range(batch_size):
-            qc = _build_quantum_circuit(
-                self.n_qubits,
-                angles_np[b],
-                var_params_np,
-                self.n_layers,
-                self.encoding,
-                self.entanglement,
-            )
-            exp_vals = _measure_expectation(
-                qc, self.observable, self.n_qubits, self._get_simulator()
-            )
-            quantum_outputs.append(exp_vals)
-
-        q_out = np.stack(quantum_outputs, axis=0)
-        q_tensor = ops.convert_to_tensor(q_out, dtype="float32")
+        # Execute the quantum evaluation through a graph-safe,
+        # differentiable bridge (numpy() is unavailable under Keras 3's
+        # tf.function trace — see _hybrid_quantum_bridge).
+        q_out = _hybrid_quantum_bridge(
+            self._evaluate_quantum,
+            angles,
+            self._var_params,
+            out_dim=self._quantum_output_dim(),
+        )
 
         # Readout projection
-        output = ops.matmul(q_tensor, self._readout)
+        output = ops.matmul(q_out, self._readout)
 
         # Activation
         if self._activation_fn is not None:
             output = self._activation_fn(output)
         elif self.activation_name is not None:
-            output = ops.activations.get(self.activation_name)(output)
+            output = keras.activations.get(self.activation_name)(output)
 
         return output
 
@@ -956,7 +1095,7 @@ class KerasQConv2D(Layer):
 
     def build(self, input_shape: Tuple[int, ...]) -> None:
         # input_shape: (batch, height, width, channels)
-        channels = input_shape[-1]
+        input_shape[-1]
         # Variational params per filter
         n_var = self.n_layers * self.n_qubits * 3
         self._var_params = self.add_weight(
@@ -1071,7 +1210,7 @@ class KerasQConv2D(Layer):
         if self._activation_fn is not None:
             output = self._activation_fn(output)
         elif self.activation_name is not None:
-            output = ops.activations.get(self.activation_name)(output)
+            output = keras.activations.get(self.activation_name)(output)
 
         return output
 
@@ -1443,18 +1582,12 @@ class KerasQVariational(Layer):
 
         return qc
 
-    def call(self, inputs: Any) -> Any:
-        x = ops.convert_to_tensor(inputs, dtype="float32")
-        x_np = ops.convert_to_numpy(x)
-        params_np = ops.convert_to_numpy(self._var_params)
-
-        original_shape = x_np.shape
-        if x_np.ndim == 1:
-            x_np = x_np.reshape(1, -1)
-
-        batch_size = x_np.shape[0]
+    def _evaluate_variational(
+        self, x_np: np.ndarray, params_np: np.ndarray
+    ) -> np.ndarray:
+        """Numpy batch evaluation: expectation values per sample."""
         results = []
-        for b in range(batch_size):
+        for b in range(x_np.shape[0]):
             # Prepare input
             if len(x_np[b]) >= self.n_qubits:
                 chunk = len(x_np[b]) // self.n_qubits
@@ -1471,9 +1604,24 @@ class KerasQVariational(Layer):
                 qc, self.observable, self.n_qubits, self._get_simulator()
             )
             results.append(exp_vals)
+        return np.stack(results, axis=0)
 
-        output = np.stack(results, axis=0)
-        return ops.convert_to_tensor(output, dtype="float32")
+    def call(self, inputs: Any) -> Any:
+        x = ops.convert_to_tensor(inputs, dtype="float32")
+        if len(x.shape) == 1:
+            x = ops.reshape(x, [1, -1])
+
+        # The quantum evaluation runs through a graph-safe, differentiable
+        # bridge (numpy() is unavailable under Keras 3's tf.function trace
+        # — see _hybrid_quantum_bridge).
+        out_dim = _quantum_output_dim(self.observable, self.n_qubits)
+        output = _hybrid_quantum_bridge(
+            self._evaluate_variational,
+            x,
+            self._var_params,
+            out_dim=out_dim,
+        )
+        return output
 
     def compute_output_shape(self, input_shape: Tuple[int, ...]) -> Tuple[int, ...]:
         if self.observable in ("z", "x", "y"):

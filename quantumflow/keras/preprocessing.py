@@ -31,14 +31,17 @@ import math
 from typing import (
     Any,
     Dict,
-    List,
     Optional,
-    Sequence,
     Tuple,
     Union,
 )
 
 import numpy as np
+
+try:
+    from quantumflow.core.circuit import QuantumCircuit
+except ImportError:  # pragma: no cover - core unavailable
+    QuantumCircuit = None  # type: ignore[assignment,misc]
 
 # Keras imports
 try:
@@ -63,6 +66,16 @@ if _KerasLayer is None:
     Layer = _StubLayer  # type: ignore[misc]
 else:
     Layer = _KerasLayer  # type: ignore[misc]
+
+
+def _check_keras_available() -> None:
+    """Raise a helpful error when Keras layers are used without Keras."""
+    if keras is None:
+        raise ImportError(
+            "Keras is required for quantumflow.keras layers. "
+            "Install it with `pip install quantumflow[keras]` "
+            "or `pip install keras`."
+        )
 
 __all__ = [
     "QuantumDataEncoder",

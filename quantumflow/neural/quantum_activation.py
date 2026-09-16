@@ -50,26 +50,15 @@ from __future__ import annotations
 import math
 from abc import ABC, abstractmethod
 from typing import (
-    Any,
     Callable,
-    Dict,
-    List,
     Optional,
     Sequence,
-    Tuple,
     Union,
 )
 
 import numpy as np
 
 from quantumflow.core.circuit import QuantumCircuit
-from quantumflow.core.gate import (
-    CNOTGate,
-    HGate,
-    RXGate,
-    RYGate,
-    RZGate,
-)
 
 __all__ = [
     "QuantumActivation",

@@ -7,7 +7,7 @@ noise, thermal relaxation, and configurable per-gate noise settings.
 """
 
 import numpy as np
-from typing import Optional, Dict, List, Any, Tuple, Union
+from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, field
 from enum import Enum
 
