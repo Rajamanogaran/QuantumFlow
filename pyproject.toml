@@ -1,5 +1,9 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel", "Cython>=3.0"]
+# Kept deliberately minimal: numpy/Cython are NOT build requirements.
+# The Cython kernels are optional (guarded in setup.py) and the package
+# always installs with pure-Python fallbacks when the build environment
+# lacks numpy, Cython, or a C compiler.
+requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]

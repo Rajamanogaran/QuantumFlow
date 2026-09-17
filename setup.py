@@ -13,7 +13,15 @@ import warnings
 from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext as _build_ext
 
-import numpy as np
+# numpy is a *runtime* dependency declared in pyproject.toml; the
+# isolated environment pip uses to build wheels does not necessarily
+# contain it (it only installs [build-system] requires).  Import it
+# defensively so metadata generation never crashes — the Cython
+# kernels are optional and simply get skipped without numpy headers.
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover - minimal build environments
+    np = None
 
 HERE = os.path.abspath(os.path.dirname(__file__))
 
@@ -77,6 +85,15 @@ def get_extensions():
         warnings.warn(
             "Cython is not installed: skipping the optional acceleration "
             "kernels (pip install Cython to build them).",
+            stacklevel=2,
+        )
+        return []
+
+    if np is None:
+        warnings.warn(
+            "numpy is not available in the build environment: skipping the "
+            "optional acceleration kernels (pure-Python fallbacks will be "
+            "used at runtime).",
             stacklevel=2,
         )
         return []

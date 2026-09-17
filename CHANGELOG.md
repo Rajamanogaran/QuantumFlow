@@ -52,6 +52,12 @@ end-to-end and every discovered defect was fixed.
 - `DensityMatrixBackend._embed_operator` had the same permutation bug as
   the core `_embed_gate`; rewritten with the direct construction.
 
+#### TensorFlow
+- `QuantumLAMB` never moved off zero-initialised parameters: the trust
+  ratio was `|w|/|u| = 0/|u| = 0` at the origin, zeroing every update.
+  It now falls back to a trust ratio of 1.0 when either norm is ~0
+  (0.83 -> 0.34 on the reference objective, previously exactly flat).
+
 #### Algorithms
 - **Grover**: the single-marked-state oracle applied a plain `Z` to the
   last qubit (not a phase flip on the marked state), and the custom
@@ -108,6 +114,21 @@ end-to-end and every discovered defect was fixed.
   passes clean on the whole package and test suite.
 
 #### Neural / TensorFlow / Keras
+- `QClassifier` / `QRegressor` (plain-TF models) never trained their
+  classical readout: only the circuit parameters received updates, so the
+  randomly-initialised readout stayed frozen and the models could not
+  learn (regression loss flat at ~0.25, classification flat at ~0.69).
+  The readout kernel/bias now train jointly with the circuit parameters
+  (analytic output-layer gradients + Adam), and are Xavier-initialised.
+  A 4-qubit `QRegressor` now fits `sin` to MSE 0.01; text classification
+  loss drops 0.72 → 0.58.
+- The models' gradient helper used central finite differences with
+  ``eps = 1e-7`` — catastrophic cancellation on an O(1) loss, so circuit
+  gradients were pure noise. All trainable parameters are RZ/RY angles,
+  so the *exact* parameter-shift rule (±π/2) is used instead.
+- `QuantumPool2D` raised ``RuntimeError: Layer has not been built`` on
+  first use; it now lazy-builds like the other layers (and a duplicated
+  lazy-build block in `QuantumConv2D` was removed).
 - Quantum layers raised `RuntimeError: Layer not built` on first use;
   all layer `call()` methods now lazy-build with the incoming shape
   (Keras-style auto-build).
@@ -127,8 +148,71 @@ end-to-end and every discovered defect was fixed.
   `variational_circuit._parse_rotation_set` with validation.
 - `QuantumNormalizer` and the other Keras preprocessing layers called an
   undefined `_check_keras_available` (`NameError` on instantiation).
+- `KerasQBatchNormalization` was broken in both paths: the training
+  branch called `ops.convert_to_numpy` on variables inside the
+  tf.function-traced `call` (`numpy() is only available when eager
+  execution is enabled`), and both branches normalised with statistics
+  shaped for the wrong axis (moving-stat assignments of shape
+  `(batch, 1)` into `(features,)` variables; inference broadcast
+  `(F, 1)` statistics against `(batch, F)` inputs). Batch statistics are
+  now reduced per feature (batch axis), moving statistics update through
+  graph-safe ops arithmetic, and inference broadcasts correctly.
+  Regression-tested in `tests/test_keras_layers.py`.
+
+#### Noise & error mitigation
+- `NoiseModel.apply_noise` was a **no-op**: it iterated `op.gate` over
+  every circuit instruction — including measurement operations, which
+  have no `.gate` — and returned the circuit unchanged (an `AttributeError`
+  path silently swallowed, and even for pure-gate circuits nothing was
+  ever inserted). Baking noise into a circuit now appends real
+  `KrausChannel` operations after every gate, scaled by `noise_scale`,
+  and measurement instructions are handled via a shared
+  `getattr(op, "gate", None)` guard (also applied to the five other
+  `op.gate` iteration sites in `simulation/simulator.py`).
+- The default depolarizing channel was not a valid CPTP map (a
+  two-Kraus construction that failed completeness for n ≥ 1). Rewritten
+  as the exact Weyl-channel Kraus expansion — completeness holds to
+  < 1e-9 for 1 and 2 qubits.
+- Added `KrausChannel` (`core/operation.py`) for general CPTP maps:
+  completeness-validated, `circuit.append_kraus(kraus_ops, qubits)`,
+  applied by `DensityMatrixSimulator` (statevector simulation raises a
+  clear `TypeError` pointing at the density-matrix simulator).
+- `DensityMatrixSimulator` gained attach-mode noise
+  (`DensityMatrixSimulator(noise_model=...)`): each gate is followed by
+  the configured error channel via `NoiseModel.after_gate` /
+  `_embed` (MSB-first bit-blasting onto the full register).
+- **Zero-noise extrapolation (Richardson)** returned garbage: the
+  Lagrange weights omitted the `(0 - x_j)` numerators — e.g. the weights
+  summed to ~0 instead of 1 and the mitigated value of data trending to
+  ~0.93 came out 0.02. Weights are now the full
+  `w_i = prod_{j≠i} (0 - x_j) / (x_i - x_j)`; exact on polynomial data.
+  (`linear` / `exponential` variants were already correct.)
 
 ### Added
+
+#### Noise
+- `KrausChannel` general CPTP support end-to-end (construct, validate,
+  append to circuits, simulate on density matrices), plus
+  `tests/test_noise.py` covering channel validity/completeness, noise
+  baking (monotone degradation with `noise_scale`), attach-mode noise,
+  Kraus-embedding conventions, and zero-noise extrapolation.
+- `tests/test_keras_layers.py`: Keras 3 graph-mode regression suite for
+  `KerasQBatchNormalization` (fit under tracing, moving-stat updates,
+  deterministic inference).
+
+#### Documentation
+- New **complete tutorial** (`docs/tutorials/complete-tutorial.md`):
+  ten chapters — conventions, states, circuits, simulation, noise,
+  algorithms, VQE/QAOA, Keras integration, the plain-TF neural stack,
+  and visualization/performance — every code block executed and
+  verified.
+- `docs/getting-started.md`, `docs/api-reference.md`,
+  `docs/tutorials/advanced-tutorials.md` and `README.md` repaired:
+  every Python block now runs against the current API (verified with a
+  block-by-block execution harness). Network-dependent dataset blocks
+  are marked `doc-skip`; the MNIST/CIFAR examples were replaced with
+  equivalent offline synthetic data.
+
 - Optional Cython acceleration kernels (`_fast_gates`, `_fast_simulator`,
   `_fast_math`) with pure-Python fallbacks; the build never fails when a
   compiler or Cython is missing.
@@ -136,12 +220,30 @@ end-to-end and every discovered defect was fixed.
 - Expanded regression suites: simulation semantics (per-shot
   measurement, gate-cache identity, compose/mapping), end-to-end
   algorithm correctness (Grover, QFT/IQFT, QPE/IPE, Shor, VQE, QAOA),
-  and TensorFlow/Keras integration (lazy build, fit + gradient flow
+  TensorFlow/Keras integration (lazy build, fit + gradient flow
   through quantum layers, data encoding) — `tensorflow` tests are
-  skipped automatically when TF is not installed.
+  skipped automatically when TF is not installed — and a quantum-ML
+  integration suite driven by a text-classification workload (plain-TF
+  quantum stack, hybrid Keras training, QClassifier/QRegressor, all
+  encodings, all optimizers, quantum conv/pool on character glyphs,
+  activations, model zoo). Full-length training runs live in
+  `examples/qml_text_classifier.py`.
 - New `tensorflow`/`keras` extra (`quantumflow[tf]`); TensorFlow is no
   longer a hard dependency (all integration code was already lazily
   imported).
+
+#### Packaging
+- `pip install` from a source checkout/zip crashed with
+  ``ModuleNotFoundError: No module named 'numpy'``: `setup.py` imported
+  numpy at module level, but pip's isolated build environment only
+  contains the `[build-system]` requirements. numpy is now imported
+  defensively (missing numpy in the build env simply skips the optional
+  Cython kernels — pure-Python fallbacks are used at runtime), and
+  `[build-system] requires` is reduced to `setuptools`/`wheel`
+  (Cython is likewise optional, not a hard build requirement).
+  Verified end-to-end: `pip install .` in a clean environment with full
+  build isolation now builds and installs, and the installed package
+  passes the Bell/Grover/noise/ZNE smoke checks (numpy 2.x compatible).
 
 ### Changed
 - Package version bumped to 0.2.0; `requires-python = ">=3.9"`
