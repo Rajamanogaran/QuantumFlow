@@ -16,19 +16,11 @@ References:
       in quantum factoring.
 """
 
-import math
 import numpy as np
-from typing import Optional, List, Tuple
+from typing import Optional, List
 
-try:
-    from quantumflow.core.circuit import QuantumCircuit
-    from quantumflow.core.gate import (
-        HGate, XGate, SwapGate, ControlledGate, PhaseGate,
-        RZGate, CNOTGate, ToffoliGate, UnitaryGate, Measurement,
-    )
-    from quantumflow.simulation.simulator import StatevectorSimulator
-except ImportError:
-    pass
+from quantumflow.core.circuit import QuantumCircuit
+from quantumflow.simulation.simulator import StatevectorSimulator
 
 
 def qft_matrix(n: int) -> np.ndarray:
@@ -79,6 +71,69 @@ def iqft_matrix(n: int) -> np.ndarray:
     return qft_matrix(n).conj().T
 
 
+def _apply_qft_gates(
+    circuit: QuantumCircuit,
+    qubits: List[int],
+    inverse: bool = False,
+    do_swaps: bool = True,
+    approximation_degree: int = 0,
+) -> None:
+    """Append QFT (or inverse QFT) gates for *qubits* onto *circuit*.
+
+    Qubit ``qubits[0]`` is the most significant bit, matching the
+    simulator's amplitude convention. With ``do_swaps=True`` the resulting
+    circuit implements exactly ``qft_matrix(len(qubits))`` (or its
+    conjugate transpose) embedded on the given qubits.
+
+    The construction uses Hadamards, controlled-phase rotations
+    ``CP(2*pi / 2**(k-j+1))`` and a final bit-reversal layer of swaps
+    (Nielsen & Chuang, Ch. 5). An earlier implementation used an
+    ``rz-cx-rz-cx`` gadget that carried extra single-qubit phases and did
+    *not* implement the QFT; it has been replaced by exact CP gates.
+    """
+    n = len(qubits)
+    if n == 0:
+        return
+    if n == 1:
+        circuit.h(qubits[0])
+        return
+
+    # Rotation (j, k) has angle 2*pi / 2**(k-j+1); larger k-j means a
+    # smaller angle. `approximation_degree` drops that many of the
+    # smallest-angle rotations (Coppersmith approximation).
+    max_r = n - 1  # largest possible k-j
+
+    def _skip(k: int, j: int) -> bool:
+        r = k - j
+        if approximation_degree <= 0:
+            return False
+        return r > max_r - approximation_degree
+
+    if not inverse:
+        for j in range(n):
+            circuit.h(qubits[j])
+            for k in range(j + 1, n):
+                if _skip(k, j):
+                    continue
+                angle = 2 * np.pi / (2 ** (k - j + 1))
+                circuit.cp(angle, qubits[k], qubits[j])
+        if do_swaps:
+            for j in range(n // 2):
+                circuit.swap(qubits[j], qubits[n - 1 - j])
+    else:
+        # Exact reverse of the forward circuit with negated angles.
+        if do_swaps:
+            for j in range(n // 2):
+                circuit.swap(qubits[j], qubits[n - 1 - j])
+        for j in range(n - 1, -1, -1):
+            for k in range(n - 1, j, -1):
+                if _skip(k, j):
+                    continue
+                angle = -2 * np.pi / (2 ** (k - j + 1))
+                circuit.cp(angle, qubits[k], qubits[j])
+            circuit.h(qubits[j])
+
+
 def apply_qft(circuit: QuantumCircuit, qubits: List[int], inverse: bool = False) -> None:
     """
     Apply QFT (or inverse QFT) to specified qubits in-place.
@@ -88,37 +143,11 @@ def apply_qft(circuit: QuantumCircuit, qubits: List[int], inverse: bool = False)
     circuit : QuantumCircuit
         Circuit to apply QFT to.
     qubits : List[int]
-        Qubit indices for QFT.
+        Qubit indices for QFT (``qubits[0]`` is the most significant).
     inverse : bool
         If True, apply inverse QFT.
     """
-    n = len(qubits)
-    if inverse:
-        # Inverse QFT: reverse order, use negative phases
-        for j in range(n - 1, -1, -1):
-            circuit.h(qubits[j])
-            for k in range(j - 1, -1, -1):
-                angle = -np.pi / (2 ** (j - k))
-                circuit.rz(angle, qubits[k])
-                circuit.cx(qubits[k], qubits[j])
-                circuit.rz(-angle, qubits[j])
-                circuit.cx(qubits[k], qubits[j])
-        # Swap qubits
-        for j in range(n // 2):
-            circuit.swap(qubits[j], qubits[n - 1 - j])
-    else:
-        # Forward QFT
-        for j in range(n):
-            circuit.h(qubits[j])
-            for k in range(j + 1, n):
-                angle = np.pi / (2 ** (k - j))
-                circuit.rz(angle, qubits[j])
-                circuit.cx(qubits[j], qubits[k])
-                circuit.rz(-angle, qubits[k])
-                circuit.cx(qubits[j], qubits[k])
-        # Swap qubits
-        for j in range(n // 2):
-            circuit.swap(qubits[j], qubits[n - 1 - j])
+    _apply_qft_gates(circuit, qubits, inverse=inverse, do_swaps=True)
 
 
 def apply_iqft(circuit: QuantumCircuit, qubits: List[int]) -> None:
@@ -190,66 +219,17 @@ class QFT:
             qubits = list(range(self.n_qubits))
 
         circuit = QuantumCircuit(self.n_qubits)
-        n = len(qubits)
+        len(qubits)
 
-        if self.inverse:
-            self._construct_inverse(circuit, qubits)
-        else:
-            self._construct_forward(circuit, qubits)
+        _apply_qft_gates(
+            circuit,
+            qubits,
+            inverse=self.inverse,
+            do_swaps=self.do_swaps,
+            approximation_degree=self.approximation_degree,
+        )
 
         return circuit
-
-    def _construct_forward(self, circuit: QuantumCircuit, qubits: List[int]) -> None:
-        """Construct the forward QFT circuit."""
-        n = len(qubits)
-
-        for j in range(n):
-            # Hadamard on qubit j
-            circuit.h(qubits[j])
-
-            # Controlled phase rotations from qubit j to qubit k
-            for k in range(j + 1, n):
-                # Skip gates for approximation
-                gate_index = (k - j - 1)
-                if gate_index < self.approximation_degree:
-                    continue
-
-                angle = np.pi / (2 ** (k - j))
-                # Controlled RZ: CRZ(angle) = CZ with phase
-                circuit.rz(angle, qubits[j])
-                circuit.cx(qubits[j], qubits[k])
-                circuit.rz(-angle, qubits[k])
-                circuit.cx(qubits[j], qubits[k])
-
-        # Bit-reversal swaps
-        if self.do_swaps:
-            for j in range(n // 2):
-                circuit.swap(qubits[j], qubits[n - 1 - j])
-
-    def _construct_inverse(self, circuit: QuantumCircuit, qubits: List[int]) -> None:
-        """Construct the inverse QFT circuit."""
-        n = len(qubits)
-
-        # Inverse: swap first, then reverse gate order with negated angles
-        if self.do_swaps:
-            for j in range(n // 2):
-                circuit.swap(qubits[j], qubits[n - 1 - j])
-
-        for j in range(n - 1, -1, -1):
-            # Controlled phase rotations (inverse)
-            for k in range(j - 1, -1, -1):
-                gate_index = (j - k - 1)
-                if gate_index < self.approximation_degree:
-                    continue
-
-                angle = -np.pi / (2 ** (j - k))
-                circuit.rz(angle, qubits[k])
-                circuit.cx(qubits[k], qubits[j])
-                circuit.rz(-angle, qubits[j])
-                circuit.cx(qubits[k], qubits[j])
-
-            # Hadamard on qubit j
-            circuit.h(qubits[j])
 
     def gate_count(self) -> int:
         """
@@ -485,7 +465,7 @@ class QuantumMultiplier:
                     circuit.x(b_qubits[i])
 
         # Repeated addition: for each bit b_i that is 1, add (a << i) to result
-        adder = QuantumAdder(2 * n)
+        QuantumAdder(2 * n)
 
         for i in range(n):
             # If b[i] is 1, add a shifted by i to result

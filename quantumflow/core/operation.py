@@ -35,9 +35,6 @@ import copy
 from abc import ABC, abstractmethod
 from typing import (
     TYPE_CHECKING,
-    Any,
-    Dict,
-    FrozenSet,
     Iterator,
     List,
     Optional,
@@ -478,6 +475,91 @@ class Barrier(Instruction):
 
     def __hash__(self) -> int:
         return hash(("barrier", self._qubits))
+
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Kraus channel
+# ---------------------------------------------------------------------------
+
+class KrausChannel(Instruction):
+    """A general (possibly non-unitary) quantum channel given by Kraus ops.
+
+    Implements :math:`\rho \\mapsto \\sum_k K_k \rho K_k^\\dagger` on the
+    qubits it covers.  Only the density-matrix simulator can execute
+    channels; the statevector simulator raises a clear error when it
+    encounters one.  Noise models insert channels via
+    :meth:`quantumflow.core.circuit.QuantumCircuit.append_kraus`.
+
+    Parameters
+    ----------
+    kraus_ops : sequence of numpy.ndarray
+        Kraus operators, all of shape ``(2**n, 2**n)`` where ``n`` is the
+        number of qubits the channel acts on.  Must satisfy the
+        completeness relation ``sum_k K_k^dag K_k = I``.
+    qubits : sequence of int
+        The qubits the channel acts on (qubit 0 of the channel is the
+        most significant qubit of each operator).
+
+    Raises
+    ------
+    ValueError
+        If the operators are not square of equal size, or violate the
+        completeness relation.
+    """
+
+    def __init__(
+        self,
+        kraus_ops: Sequence[np.ndarray],
+        qubits: Sequence[int],
+    ) -> None:
+        ops = [np.asarray(k, dtype=np.complex128) for k in kraus_ops]
+        if not ops:
+            raise ValueError("KrausChannel requires at least one operator")
+        dim = ops[0].shape[0]
+        for k in ops:
+            if k.ndim != 2 or k.shape != (dim, dim):
+                raise ValueError(
+                    f"All Kraus operators must be square of equal size, got "
+                    f"{k.shape} (expected ({dim}, {dim}))"
+                )
+        completeness = sum(k.conj().T @ k for k in ops)
+        if not np.allclose(completeness, np.eye(dim), atol=1e-6):
+            raise ValueError(
+                "Kraus operators violate the completeness relation "
+                "sum_k K_k^dag K_k = I"
+            )
+        qubits_t = tuple(int(q) for q in qubits)
+        if len(qubits_t) * (dim // max(len(qubits_t), 1)) != dim or int(
+            np.log2(dim)
+        ) != len(qubits_t):
+            raise ValueError(
+                f"Operator dimension {dim} does not match {len(qubits_t)} qubits"
+            )
+        self._kraus_ops = ops
+        self._qubits = qubits_t
+
+    @property
+    def name(self) -> str:
+        return f"kraus({len(self._kraus_ops)})"
+
+    @property
+    def num_qubits(self) -> int:
+        return len(self._qubits)
+
+    @property
+    def qubits(self) -> Tuple[int, ...]:
+        return self._qubits
+
+    @property
+    def kraus_ops(self) -> List[np.ndarray]:
+        return self._kraus_ops
+
+    def __repr__(self) -> str:
+        return (
+            f"KrausChannel(n_qubits={len(self._qubits)}, "
+            f"qubits={self._qubits}, n_ops={len(self._kraus_ops)})"
+        )
 
 
 # ---------------------------------------------------------------------------

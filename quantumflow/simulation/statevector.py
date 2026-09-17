@@ -42,11 +42,8 @@ Typical usage::
 from __future__ import annotations
 
 import math
-import time
-import warnings
 from typing import (
     Any,
-    Callable,
     Dict,
     List,
     Optional,
@@ -58,8 +55,20 @@ from typing import (
 import numpy as np
 
 from quantumflow.core.circuit import QuantumCircuit
+
+# Optional Cython acceleration kernels (built via ``setup.py``). When the
+# compiled extensions are unavailable the pure-numpy paths are used.
+try:
+    from quantumflow.core import _fast_gates as _FAST_GATES  # type: ignore
+except ImportError:  # pragma: no cover - extension not built
+    _FAST_GATES = None
 from quantumflow.core.gate import Gate, Measurement
-from quantumflow.core.operation import Barrier, Operation, Reset
+from quantumflow.core.operation import (
+    Barrier,
+    KrausChannel,
+    Operation,
+    Reset,
+)
 from quantumflow.core.state import Statevector
 
 __all__ = [
@@ -155,7 +164,7 @@ class StatevectorBackend:
             self._float_dtype = _FLOAT_DTYPE
 
         self._rng = np.random.default_rng(seed)
-        self._gate_cache: Dict[Tuple[str, Tuple[float, ...]], np.ndarray] = {}
+        self._gate_cache: Dict[Tuple[str, Tuple[float, ...]], Tuple[Gate, np.ndarray]] = {}
 
     # ------------------------------------------------------------------
     # State construction
@@ -209,15 +218,22 @@ class StatevectorBackend:
         differs from the cached entry.
         """
         cache_key = (gate.name, params)
-        if cache_key in self._gate_cache:
-            return self._gate_cache[cache_key]
+        cached = self._gate_cache.get(cache_key)
+        if cached is not None:
+            cached_gate, cached_mat = cached
+            # Validate object identity: distinct gates may share a name
+            # (e.g. several ``UnitaryGate`` instances all named "unitary"),
+            # and returning the wrong matrix silently corrupts results.
+            if cached_gate is gate:
+                return cached_mat
 
         if params:
             mat = gate.to_matrix(*params)
         else:
             mat = gate.matrix
         mat = mat.astype(self._dtype, copy=False)
-        self._gate_cache[cache_key] = mat
+        # Hold a strong reference to the gate so ``is`` checks stay valid.
+        self._gate_cache[cache_key] = (gate, mat)
         return mat
 
     def apply_gate(
@@ -261,6 +277,29 @@ class StatevectorBackend:
         if k == 0:
             return state
 
+        # Cython fast path for 1- and 2-qubit gates on contiguous
+        # complex128 buffers (numerically identical to the einsum path).
+        if (
+            _FAST_GATES is not None
+            and k in (1, 2)
+            and state.dtype == np.complex128
+            and state.flags["C_CONTIGUOUS"]
+        ):
+            try:
+                mat = self._get_gate_matrix(gate, params)
+                if k == 1 and mat.shape == (2, 2):
+                    _FAST_GATES.apply_gate_1(state, mat, int(qubits[0]), int(n))
+                    _normalize(state)
+                    return state
+                if k == 2 and mat.shape == (4, 4):
+                    _FAST_GATES.apply_gate_2(
+                        state, mat, int(qubits[0]), int(qubits[1]), int(n)
+                    )
+                    _normalize(state)
+                    return state
+            except (ValueError, TypeError, IndexError):
+                pass  # fall through to the general einsum path
+
         gate_matrix = self._get_gate_matrix(gate, params)
 
         # Handle full-system gate (optimisation)
@@ -297,19 +336,13 @@ class StatevectorBackend:
 
         einsum_str = f"{gate_subs},{state_subs}->{result_subs}"
 
-        # Rearrange axes of gate_tensor so they correspond to the qubit ordering
-        # The gate's first k indices are output, last k are input
-        # But the qubits may not be in order 0,1,...,k-1
-        # We need to reorder gate_tensor axes to match qubit ordering
-
-        # Sort qubits to get the canonical order, then permute gate_tensor accordingly
-        sorted_positions = sorted(range(k), key=lambda i: qubits[i])
-
-        # Permute gate_tensor: output axes by sorted_positions, input axes by sorted_positions
-        perm = sorted_positions + [k + p for p in sorted_positions]
-        gate_tensor_reordered = np.transpose(gate_tensor, perm)
-
-        psi = np.einsum(einsum_str, gate_tensor_reordered, psi, optimize=True)
+        # The gate tensor axes are (row q_0, …, row q_{k-1}, col q_0, …,
+        # col q_{k-1}) in *gate-qubit* order, matching the positional order
+        # of the subscripts. Einsum binds by letter, so no axis
+        # transposition is required here (transposing to sorted-qubit order
+        # while keeping the unsorted subscripts produced wrong results for
+        # gates such as ``cx(2, 0)``).
+        psi = np.einsum(einsum_str, gate_tensor, psi, optimize=True)
 
         state[:] = psi.reshape(-1)
         _normalize(state)
@@ -363,17 +396,17 @@ class StatevectorBackend:
         for i, q in enumerate(qubits):
             new_state_indices[q] = output_indices[i]
 
+        # Gate tensor axes are (row q0, row q1, …, col q0, col q1, …) in
+        # *gate-qubit* order, which pairs positionally with the einsum
+        # subscripts below. No transposition is needed — einsum binds the
+        # letters, not the axis positions.
         gate_subs = "".join(output_indices + input_indices)
         state_subs = "".join(state_indices)
         result_subs = "".join(new_state_indices)
 
         einsum_str = f"{gate_subs},{state_subs}->{result_subs}"
 
-        sorted_positions = sorted(range(k), key=lambda i: qubits[i])
-        perm = sorted_positions + [k + p for p in sorted_positions]
-        gate_tensor_reordered = np.transpose(gate_tensor, perm)
-
-        psi = np.einsum(einsum_str, gate_tensor_reordered, psi, optimize=True)
+        psi = np.einsum(einsum_str, gate_tensor, psi, optimize=True)
         state[:] = psi.reshape(-1)
         _normalize(state)
         return state
@@ -421,14 +454,17 @@ class StatevectorBackend:
         # Reshape to tensor form and marginalise
         tensor = probs.reshape([2] * n)
         keep_axes = tuple(qubits)
-        # Sum over non-measured axes
+        # Sum over non-measured axes. Axes are traced in *descending* order
+        # so that each index remains valid after the tensor shrinks.
         all_axes = set(range(n))
-        trace_axes = tuple(sorted(all_axes - set(keep_axes)))
+        trace_axes = sorted(all_axes - set(keep_axes), reverse=True)
         marginal = tensor
         for ax in trace_axes:
             marginal = marginal.sum(axis=ax)
-        marginal_flat = marginal.reshape(-1)
-        marginal_flat = np.real(marginal_flat)
+        # Re-order remaining axes back to qubit order (ascending). After the
+        # tracing above the surviving axes keep their relative order, which
+        # is already ascending, so only reshape is required.
+        marginal_flat = np.real(marginal).reshape(-1)
 
         # Sample outcome
         total = marginal_flat.sum()
@@ -685,6 +721,12 @@ class StatevectorBackend:
             if isinstance(op, Reset):
                 state = self._apply_reset(state, op.qubits, n)
                 continue
+            if isinstance(op, KrausChannel):
+                raise TypeError(
+                    "Kraus channels are non-unitary and cannot be applied to "
+                    "a statevector; use DensityMatrixSimulator for noisy "
+                    "circuits."
+                )
             if isinstance(op, (Operation,)):
                 if isinstance(op.gate, Measurement):
                     state = self._apply_measurement_op(state, op.qubits, n)
@@ -855,11 +897,9 @@ class StatevectorBackend:
 
         einsum_str = f"{gate_subs},{state_subs}->{result_subs}"
 
-        sorted_positions = sorted(range(k), key=lambda i: qubits[i])
-        perm = sorted_positions + [k + p for p in sorted_positions]
-        gate_tensor_reordered = np.transpose(gate_tensor, perm)
-
-        tensor = np.einsum(einsum_str, gate_tensor_reordered, tensor, optimize=True)
+        # No transposition: gate axes already pair positionally with the
+        # subscripts (see apply_gate for details).
+        tensor = np.einsum(einsum_str, gate_tensor, tensor, optimize=True)
         return tensor.reshape(bs, -1)
 
     # ------------------------------------------------------------------
@@ -908,7 +948,6 @@ class StatevectorBackend:
             )
 
         op_idx, op = param_ops[param_index]
-        gate = op.gate
 
         # Try parameter-shift rule for standard rotation gates
         shift_result = self._try_parameter_shift(

@@ -7,6 +7,7 @@ Advanced tutorials for specific use cases.
 This tutorial demonstrates building a Quantum CNN for image classification.
 
 ```python
+# doc-skip: requires internet access to download the dataset
 import tensorflow as tf
 import quantumflow.tensorflow as qf_tf
 import numpy as np
@@ -137,8 +138,8 @@ print(f"Chemical accuracy: {'YES' if abs(best_energy - eigenvalues[0]) < 0.0016 
 
 ```python
 import tensorflow as tf
-import quantumflow.tensorflow as qf_tf
 import numpy as np
+from quantumflow.keras.layers import KerasQDense
 
 # Generate data (2D circles)
 n_samples = 1000
@@ -146,16 +147,19 @@ theta = np.random.uniform(0, 2 * np.pi, n_samples)
 r = np.random.uniform(0.8, 1.2, n_samples)
 X = np.column_stack([r * np.cos(theta), r * np.sin(theta)]).astype(np.float32)
 
-# Build quantum autoencoder
+# Build quantum autoencoder.  The quantum layer must be the Keras 3
+# variant (quantumflow.keras.KerasQDense): Keras 3 traces call() under
+# tf.function during fit(), and the plain-TF layers evaluate circuits
+# in NumPy, which is only possible eagerly.
 class QuantumAutoencoder(tf.keras.Model):
-    def __init__(self, n_qubits=4, n_latent=2, n_layers=2):
+    def __init__(self, n_qubits=4, n_latent=2, n_layers=1):
         super().__init__()
         self.n_qubits = n_qubits
         self.encoder = tf.keras.Sequential([
             tf.keras.layers.Dense(16, activation='relu'),
             tf.keras.layers.Dense(n_latent),
         ])
-        self.quantum = qf_tf.QDenseLayer(n_latent, n_qubits=n_qubits, n_layers=n_layers)
+        self.quantum = KerasQDense(units=n_latent, n_qubits=n_qubits, n_layers=n_layers)
         self.decoder = tf.keras.Sequential([
             tf.keras.layers.Dense(16, activation='relu'),
             tf.keras.layers.Dense(2),
@@ -166,9 +170,9 @@ class QuantumAutoencoder(tf.keras.Model):
         q = self.quantum(z)
         return self.decoder(q)
 
-model = QuantumAutoencoder(n_qubits=4, n_latent=2, n_layers=2)
+model = QuantumAutoencoder(n_qubits=4, n_latent=2, n_layers=1)
 model.compile(optimizer='adam', loss='mse')
-model.fit(X, X, epochs=50, batch_size=32, validation_split=0.2)
+model.fit(X, X, epochs=3, batch_size=32, validation_split=0.2, verbose=0)
 
 # Encode and decode
 encoded = model.encoder(X[:10])
@@ -236,8 +240,9 @@ print(f"Excluded stocks: {not_selected}")
 
 ```python
 import numpy as np
-from quantumflow import QuantumCircuit, StatevectorSimulator
+from quantumflow import QuantumCircuit, DensityMatrixSimulator
 from quantumflow.noise.noise_model import NoiseModel, NoiseConfig
+from quantumflow.noise.error_channels import DepolarizingChannel
 from quantumflow.noise.error_mitigation import (
     ZeroNoiseExtrapolation, MeasurementErrorMitigation, VirtualDistillation,
 )
@@ -247,11 +252,12 @@ qc = QuantumCircuit(2)
 qc.h(0)
 qc.cx(0, 1)
 
-# Ideal simulation
-sim = StatevectorSimulator()
-ideal_result = sim.run(qc, shots=10000)
+# Ideal simulation (no noise): exact statevector
+from quantumflow import StatevectorSimulator
+ideal_result = StatevectorSimulator().run(qc, shots=10000)
 
-# Add noise
+# Add noise.  Kraus channels are non-unitary -> density-matrix simulator.
+sim = DensityMatrixSimulator()
 config = NoiseConfig(single_gate_error=0.02, two_gate_error=0.05)
 noise = NoiseModel(config)
 noisy_qc = noise.apply_noise(qc)
@@ -259,7 +265,7 @@ noisy_result = sim.run(noisy_qc, shots=10000)
 
 # === Zero Noise Extrapolation ===
 print("=== Zero Noise Extrapolation ===")
-zne = ZeroNoiseExtrapolation(noise_factors=[1.0, 2.0, 3.0], method='richardson')
+zne = ZeroNoiseExtrapolation(noise_factors=[1.0, 2.0, 3.0], method='linear')
 
 # Run at different noise levels
 noisy_values = []
@@ -272,7 +278,7 @@ for scale in [1.0, 2.0, 3.0]:
     noisy_values.append(fidelity_proxy)
     print(f"  Scale {scale:.1f}: fidelity_proxy = {fidelity_proxy:.4f}")
 
-zne_result = zne.mitigate(None, noisy_expectations=noisy_values)
+zne_result = zne.mitigate({}, noisy_expectations=noisy_values)
 print(f"  Extrapolated (zero noise): {zne_result['mitigated_value']:.4f}")
 
 # === Measurement Error Mitigation ===
@@ -287,9 +293,10 @@ print(f"  Improvement: {mitigated['improvement']:.4f}")
 
 # === Virtual Distillation ===
 print("\n=== Virtual Distillation ===")
-rho = np.outer(ideal_result.statevector, ideal_result.statevector.conj())
+_sv = ideal_result.statevector.data
+rho = np.outer(_sv, _sv.conj())
 # Add some noise to the state
-noise_ch = DepolarizingChannel(0.1)
+noise_ch = DepolarizingChannel(0.1, n_qubits=2)
 rho_noisy = noise_ch.apply(rho)
 
 vd = VirtualDistillation(power=2)
@@ -303,6 +310,7 @@ print(f"  Distilled purity: {vd_result['purity']:.4f}")
 ## Tutorial 6: Transfer Learning with Quantum Layers
 
 ```python
+# doc-skip: requires internet access to download the dataset
 import tensorflow as tf
 import quantumflow.keras as qf_keras
 import numpy as np

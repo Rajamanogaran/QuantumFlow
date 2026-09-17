@@ -146,11 +146,20 @@ Mixed quantum state representation.
 Ideal statevector simulator.
 
 ```python
+from quantumflow import QuantumCircuit, StatevectorSimulator
+import numpy as np
+
+circuit = QuantumCircuit(2)
+circuit.h(0)
+circuit.cx(0, 1)
+observable = np.diag([1, -1])
+
 sim = StatevectorSimulator()
 result = sim.run(circuit, shots=1024, initial_state=None)
-state = sim.state(circuit)
-probs = sim.probabilities(circuit)
-expt = sim.expectation(circuit, observable)
+state = result.statevector
+probs = result.get_probabilities()
+expt = sim.expectation(circuit, np.kron(observable, np.eye(2)))
+print("counts keys:", list(result.get_counts()), "| <Z0>:", round(expt, 4))
 ```
 
 ### `DensityMatrixSimulator(config=None, noise_config=None)`
@@ -158,10 +167,16 @@ expt = sim.expectation(circuit, observable)
 Density matrix simulator with noise support.
 
 ```python
-from quantumflow.noise.noise_model import NoiseConfig
+from quantumflow import DensityMatrixSimulator
+from quantumflow.noise.noise_model import NoiseConfig, NoiseModel
+
+circuit = QuantumCircuit(2)
+circuit.x(0)
+circuit.measure([0, 1], [0, 1])
 config = NoiseConfig(single_gate_error=0.01)
-sim = DensityMatrixSimulator(noise_config=config)
+sim = DensityMatrixSimulator(noise_model=NoiseModel(config))
 result = sim.run(circuit, shots=1024)
+print("noisy counts:", result.get_counts())
 ```
 
 ### `MPSimulator(config=None)`
@@ -170,9 +185,17 @@ Matrix Product State simulator for larger systems.
 
 ```python
 from quantumflow.simulation.simulator import MPSimulator, BackendConfig
+
+circuit = QuantumCircuit(4)
+circuit.h(0)
+circuit.cx(0, 1)
+circuit.cx(1, 2)
+circuit.cx(2, 3)
+circuit.measure([0, 1, 2, 3], [0, 1, 2, 3])
 config = BackendConfig(max_qubits=30, optimization_level=2)
 sim = MPSimulator(config=config)
 result = sim.run(circuit, shots=1024)
+print("MPS counts:", result.get_counts())
 ```
 
 ### `SimulationResult`
@@ -302,58 +325,80 @@ Drop-in replacement for Dense layers using quantum circuits.
 ### `GroverSearch(n_qubits, oracle, marked_states, num_iterations)`
 
 ```python
+from quantumflow import GroverSearch
+
 grover = GroverSearch(n_qubits=3, marked_states=['101'])
 result = grover.run(shots=1024)
-# result: {'counts', 'marked_found', 'most_frequent', 'success_probability', ...}
+print("most_frequent:", result["most_frequent"])
 ```
 
 ### `QFT(n_qubits, inverse, do_swaps, approximation_degree)`
 
 ```python
-qft = QFT(8, approximation_degree=3)  # Approximate QFT
+from quantumflow.algorithms.qft import QFT, qft_matrix
+import numpy as np
+
+qft = QFT(3)
 circuit = qft.construct_circuit()
-U = qft.exact_unitary()  # Full QFT matrix
+U = qft.exact_unitary()
+print("matches textbook:", np.allclose(U, qft_matrix(3)))
 ```
 
 ### `ShorAlgorithm(N, a)`
 
 ```python
+from quantumflow import ShorAlgorithm
+
 shor = ShorAlgorithm(N=15)
 result = shor.factor()
-# result: {'factors', 'N', 'attempts', 'success', ...}
+print("factors:", result["factors"], "| success:", result["success"])
 ```
 
 ### `PhaseEstimation(unitary, n_evaluation_qubits, n_state_qubits)`
 
 ```python
-qpe = PhaseEstimation(U, 8, 1)
-result = qpe.run(shots=4096)
-# result: {'phase', 'phase_bits', 'precision', ...}
+import numpy as np
+from quantumflow import PhaseEstimation
+
+U = np.diag([1, np.exp(1j * 2 * np.pi * 0.25)])
+qpe = PhaseEstimation(U, n_evaluation_qubits=4, n_state_qubits=1)
+result = qpe.run(shots=2048)
+print("phase:", result["phase"])
 ```
 
 ### `VQE(hamiltonian, ansatz, optimizer, initial_params)`
 
 ```python
-vqe = VQE(H, ansatz, optimizer='COBYLA')
-result = vqe.run(max_iterations=200)
-# VQEResult: optimal_energy, optimal_params, convergence_history, ...
+from quantumflow.algorithms.vqe import Hamiltonian, HWEAnsatz, PauliTerm, VQE
+
+H = Hamiltonian(2, [PauliTerm(1.0, "ZZ"), PauliTerm(0.5, "XX")])
+ansatz = HWEAnsatz(2, n_layers=1)
+vqe = VQE(H, ansatz=ansatz, optimizer='COBYLA')
+result = vqe.run(max_iterations=100)
+print("optimal_energy:", round(result.optimal_energy, 6))
 ```
 
 ### `QAOA(cost_hamiltonian, p, mixer)`
 
 ```python
-qaoa = QAOA(cost, p=3, mixer='x')
-result = qaoa.run(optimizer='COBYLA')
-# QAOAResult: optimal_cost, optimal_params, best_bitstring, approximation_ratio
+from quantumflow.algorithms.qaoa import CostHamiltonian, QAOA
+
+cost = CostHamiltonian(2, [(0.5, "ZZ")])
+qaoa = QAOA(cost, p=2, mixer='x')
+result = qaoa.run(optimizer='COBYLA', max_iterations=50)
+print("best_bitstring:", result.best_bitstring)
 ```
 
 ### `MaxCutQAOA(edges, n_nodes, p)`
 
 ```python
-maxcut = MaxCutQAOA(edges=[(0,1),(1,2),(2,3)], n_nodes=4, p=3)
+from quantumflow.algorithms.qaoa import MaxCutQAOA
+
+maxcut = MaxCutQAOA(edges=[(0,1),(1,2),(2,3)], n_nodes=4, p=1)
 result = maxcut.solve()
 partition = maxcut.get_cut(result.best_bitstring)
 cut_value = maxcut.cut_value(result.best_bitstring)
+print("cut_value:", cut_value)
 ```
 
 ---
@@ -396,20 +441,34 @@ cut_value = maxcut.cut_value(result.best_bitstring)
 ### `CircuitDrawer(circuit, scale, wire_order)`
 
 ```python
+import matplotlib
+matplotlib.use("Agg")
+from quantumflow import CircuitDrawer, QuantumCircuit
+
+qc = QuantumCircuit(2)
+qc.h(0)
+qc.cx(0, 1)
 drawer = CircuitDrawer(qc)
-drawer.draw_text(label="My Circuit")        # ASCII art
-drawer.draw_matplotlib(title="Circuit")      # matplotlib figure
-drawer.draw_latex()                          # LaTeX Qcircuit code
+print(drawer.draw_text(label="My Circuit"))        # ASCII art
+drawer.draw_matplotlib(title="Circuit")            # matplotlib figure
+latex = drawer.draw_latex()                        # LaTeX Qcircuit code
+print("latex starts with:", latex[:30])
 ```
 
 ### `BlochSphere(figsize, title)`
 
 ```python
+import matplotlib
+matplotlib.use("Agg")
+import numpy as np
+from quantumflow import BlochSphere, Statevector
+
 bloch = BlochSphere(title="States")
-bloch.add_state(state, label="|psi>")
-bloch.add_trail(state_list, color='green')
-bloch.show(filename="bloch.png")
+bloch.add_state(Statevector([1, 0]), label="|psi>")
+bloch.add_trail([np.array([1, 0]), np.array([0, 1])], color='green')
+bloch.show(filename="/tmp/qf_api_bloch.png")
 bloch.clear()
+print("bloch ok")
 ```
 
 ---

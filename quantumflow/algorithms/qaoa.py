@@ -14,21 +14,15 @@ References:
 """
 
 import numpy as np
-from typing import Optional, List, Tuple, Dict, Any, Callable
+from typing import Optional, List, Tuple, Dict, Callable
 from dataclasses import dataclass, field
 from scipy.optimize import minimize as scipy_minimize
 
-try:
-    from quantumflow.core.circuit import QuantumCircuit
-    from quantumflow.core.gate import (
-        HGate, XGate, RXGate, RYGate, RZGate,
-        CNOTGate, CZGate, RXXGate, RYYGate, RZZGate,
-        Measurement, UnitaryGate, PhaseGate,
-    )
-    from quantumflow.core.state import Statevector
-    from quantumflow.simulation.simulator import StatevectorSimulator
-except ImportError:
-    pass
+from quantumflow.core.circuit import QuantumCircuit
+from quantumflow.core.gate import (
+    Measurement,
+)
+from quantumflow.simulation.simulator import StatevectorSimulator
 
 
 @dataclass
@@ -249,28 +243,55 @@ class QAOA:
         return circuit
 
     def _apply_cost_unitary(self, circuit: QuantumCircuit, gamma: float) -> None:
-        """Apply exp(-i*gamma*H_cost) to the circuit."""
+        """Apply exp(-i*gamma*H_cost) to the circuit.
+
+        Z-only Pauli strings (the terms produced by MaxCut/MIS/QUBO cost
+        functions) are decomposed exactly: a single ``Z`` becomes an RZ,
+        a two-qubit ``Z_i Z_j`` becomes RZZ (any qubit distance), and a
+        general ``Z...Z`` string becomes a CNOT ladder around one RZ.
+        (The previous implementation additionally emitted single-qubit
+        RZs for every ``Z`` character of multi-qubit terms — and none at
+        all for non-adjacent ``Z_i Z_j`` strings — which does not
+        implement the cost unitary.)
+        """
         for coeff, pauli in self.cost_hamiltonian.terms:
             angle = -2 * coeff * gamma
-            for i, p in enumerate(pauli):
-                if p == 'Z':
-                    circuit.rz(angle, i)
-                elif p == 'X':
-                    circuit.rx(angle, i)
+            support = [(i, p) for i, p in enumerate(pauli) if p != 'I']
+            if not support:
+                continue  # identity term: global phase only
+            if all(p == 'Z' for _, p in support):
+                if len(support) == 1:
+                    circuit.rz(angle, support[0][0])
+                elif len(support) == 2:
+                    circuit.rzz(angle, support[0][0], support[1][0])
+                else:
+                    qs = [q for q, _ in support]
+                    for k in range(len(qs) - 1):
+                        circuit.cx(qs[k], qs[k + 1])
+                    circuit.rz(angle, qs[-1])
+                    for k in range(len(qs) - 2, -1, -1):
+                        circuit.cx(qs[k], qs[k + 1])
+            elif len(support) == 1:
+                q, p = support[0]
+                if p == 'X':
+                    circuit.rx(angle, q)
                 elif p == 'Y':
-                    circuit.ry(angle, i)
-                # Two-qubit terms (simplified)
-                if i + 1 < len(pauli):
-                    if pauli[i] == 'Z' and pauli[i+1] == 'Z':
-                        circuit.rzz(angle, i, i+1)
+                    circuit.ry(angle, q)
+                else:
+                    circuit.rz(angle, q)
+            else:
+                raise ValueError(
+                    f"Unsupported cost term '{pauli}': only Z-only strings "
+                    "and single-qubit X/Y/Z terms are supported."
+                )
 
-    def cost_function(self, params: np.ndarray, simulator: Optional['StatevectorSimulator'] = None) -> float:
+    def cost_function(self, params: np.ndarray, simulator: Optional['StatevectorSimulator'] = None, shots: int = 4096) -> float:
         """Compute cost function value for given parameters."""
         if simulator is None:
             simulator = StatevectorSimulator()
 
         circuit = self.construct_circuit(params)
-        result = simulator.run(circuit, shots=4096)
+        result = simulator.run(circuit, shots=shots)
         counts = result.get_counts()
         return self.cost_hamiltonian.expectation(counts)
 
@@ -280,6 +301,7 @@ class QAOA:
         max_iterations: int = 100,
         simulator: Optional['StatevectorSimulator'] = None,
         callback: Optional[Callable] = None,
+        shots: int = 4096,
     ) -> QAOAResult:
         """
         Run QAOA optimization.
@@ -294,6 +316,8 @@ class QAOA:
             Quantum simulator.
         callback : Optional[Callable]
             Callback function.
+        shots : int
+            Measurement shots per objective evaluation.
 
         Returns
         -------
@@ -306,7 +330,7 @@ class QAOA:
         history = []
 
         def objective(params):
-            cost = self.cost_function(params, simulator)
+            cost = self.cost_function(params, simulator, shots=shots)
             history.append(cost)
             if callback:
                 callback(len(history), cost, params)
@@ -320,10 +344,15 @@ class QAOA:
 
         # Get final measurement results
         circuit = self.construct_circuit(result.x)
-        final_result = simulator.run(circuit, shots=8192)
+        final_result = simulator.run(circuit, shots=max(shots, 8192))
         counts = final_result.get_counts()
 
-        best_bitstring = max(counts, key=counts.get)
+        # Report the lowest-cost sampled bitstring (ties broken by
+        # frequency).  The most-frequent bitstring alone can be a
+        # suboptimal state for small acceptance windows.
+        best_bitstring = min(
+            counts, key=lambda b: (self.cost_hamiltonian.evaluate(b), -counts[b])
+        )
 
         # Compute approximation ratio
         costs = [self.cost_hamiltonian.evaluate(bs) for bs in counts]
@@ -382,20 +411,17 @@ class MaxCutQAOA:
         self.n_nodes = n_nodes
         self.p = p
 
-        # Build cost Hamiltonian for MaxCut
-        terms = []
-        for (i, j) in edges:
-            # MaxCut cost: (1 - Z_i Z_j) / 2
-            terms.append((0.5, 'I' * i + 'Z' + 'I' * (j - i - 1) + 'Z' + 'I' * (n_nodes - j - 1)))
-            terms.append((-0.5, 'I' * n_nodes))
-
-        # Simplify: constant terms
+        # MaxCut cost Hamiltonian: H_C = sum_{(i,j) in E} (1 - Z_i Z_j) / 2.
+        # Minimizing H_C is equivalent to minimizing +0.5 * sum Z_i Z_j
+        # (the constant |E|/2 is dropped).  A previous implementation used
+        # a *negative* coefficient, which drove the optimizer to align all
+        # spins — i.e. a cut of size zero.
         cost = CostHamiltonian(n_nodes)
         for (i, j) in edges:
             zz_str = ['I'] * n_nodes
             zz_str[i] = 'Z'
             zz_str[j] = 'Z'
-            cost.add_term(-0.5, ''.join(zz_str))
+            cost.add_term(0.5, ''.join(zz_str))
 
         self.cost_hamiltonian = cost
         self.qaoa = QAOA(cost, p=p)
@@ -414,7 +440,9 @@ class MaxCutQAOA:
         QAOAResult
             Result with optimal cut and partition.
         """
-        return self.qaoa.run(optimizer=optimizer, max_iterations=max_iterations)
+        return self.qaoa.run(
+            optimizer=optimizer, max_iterations=max_iterations, shots=shots
+        )
 
     def get_cut(self, bitstring: str) -> Tuple[List[int], List[int]]:
         """
@@ -465,27 +493,42 @@ class MISQAOA:
         self.n_nodes = n_nodes
         self.p = p
 
-        # MIS cost: maximize sum x_i - penalty * sum_{adjacent i,j} x_i * x_j
-        # In QAOA, we minimize -|S| + penalty * |adjacent pairs|
-        terms = []
-        penalty = 2.0  # Penalty weight
+        # MIS cost: maximize |S| - penalty * (# adjacent pairs both chosen).
+        # With x_i = (1 - Z_i)/2, expand exactly into Z-basis terms
+        # (a previous implementation kept only the Z_i Z_j part of
+        # penalty * x_i x_j, dropping the linear terms, which inverted the
+        # penalty's effect near the optimum).
+        coeff_acc: Dict[str, float] = {}
+        penalty = 2.0
 
-        # Maximize |S|: minimize -sum Z_i (mapping 1->-1, 0->+1)
-        # Using Z basis: x_i = (1 - Z_i) / 2
-        # Sum x_i = (n - sum Z_i) / 2
+        def _add(coeff: float, pauli: str) -> None:
+            if coeff == 0.0:
+                return
+            coeff_acc[pauli] = coeff_acc.get(pauli, 0.0) + coeff
+
+        # Gain term: -|S|  ->  +0.5 * sum Z_i   (constant -n/2 dropped)
         for i in range(n_nodes):
             pauli = ['I'] * n_nodes
             pauli[i] = 'Z'
-            terms.append((0.5, ''.join(pauli)))
+            _add(0.5, ''.join(pauli))
 
-        # Penalty for adjacent pairs
+        # Penalty: penalty * x_i x_j = penalty * (1 - Z_i)(1 - Z_j) / 4
         for (i, j) in edges:
             pauli = ['I'] * n_nodes
-            pauli[i] = 'Z'
-            pauli[j] = 'Z'
-            terms.append((-penalty / 4, ''.join(pauli)))
+            zi = ['I'] * n_nodes
+            zi[i] = 'Z'
+            zj = ['I'] * n_nodes
+            zj[j] = 'Z'
+            zz = ['I'] * n_nodes
+            zz[i] = 'Z'
+            zz[j] = 'Z'
+            _add(-penalty / 4, ''.join(zi))
+            _add(-penalty / 4, ''.join(zj))
+            _add(penalty / 4, ''.join(zz))
 
-        cost = CostHamiltonian(n_nodes, terms)
+        cost = CostHamiltonian(
+            n_nodes, [(c, p) for p, c in coeff_acc.items() if c != 0.0]
+        )
         self.qaoa = QAOA(cost, p=p)
 
     def solve(self, optimizer: str = 'COBYLA', max_iterations: int = 100) -> QAOAResult:

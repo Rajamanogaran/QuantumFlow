@@ -13,13 +13,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from quantumflow.core.gate import (
     HGate, XGate, YGate, ZGate, CNOTGate, RXGate, RYGate, RZGate,
-    UnitaryGate, CZGate, SwapGate,
+    UnitaryGate,
 )
 from quantumflow.core.state import Statevector, DensityMatrix
 from quantumflow.core.circuit import QuantumCircuit
 from quantumflow.utils.math import (
-    fidelity, purity, von_neumann_entropy, expectation_value,
-    is_unitary, is_hermitian, random_unitary, kron,
+    fidelity, von_neumann_entropy, is_unitary, is_hermitian, random_unitary, kron,
 )
 
 

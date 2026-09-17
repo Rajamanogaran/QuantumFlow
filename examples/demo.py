@@ -40,7 +40,7 @@ def example_bell_state():
     U = qc.to_unitary()
     bell_state = U @ np.array([1, 0, 0, 0])
     print(f"\nBell state: {bell_state}")
-    print(f"Expected: (|00> + |11>) / sqrt(2)")
+    print("Expected: (|00> + |11>) / sqrt(2)")
 
 
 def example_grover_search():
@@ -82,7 +82,7 @@ def example_qft():
 
     # Approximate QFT
     aqft = QFT(3, approximation_degree=2)
-    print(f"\nApproximate QFT (3 qubits, degree 2)")
+    print("\nApproximate QFT (3 qubits, degree 2)")
     print(f"Exact gates: {qft.gate_count()}")
     print(f"Approximate gates: {aqft.gate_count()}")
     if qft.gate_count() > 0:
@@ -96,12 +96,12 @@ def example_vqe():
     print("=" * 60)
 
     from quantumflow.algorithms.vqe import (
-        VQE, Hamiltonian, HWEAnsatz, VQEResult,
+        VQE, Hamiltonian, HWEAnsatz,
     )
 
     # Transverse field Ising model
     H = Hamiltonian.transverse_field_ising(2, j=1.0, h=-1.0)
-    print(f"\nHamiltonian: Transverse Field Ising Model (2 sites)")
+    print("\nHamiltonian: Transverse Field Ising Model (2 sites)")
     print(f"Number of Pauli terms: {H.n_terms}")
     print(f"H matrix:\n{H.matrix()}")
 
@@ -115,16 +115,16 @@ def example_vqe():
     print(f"Number of parameters: {ansatz.n_params()}")
 
     vqe = VQE(H, ansatz, optimizer='COBYLA')
-    print(f"\nRunning VQE optimization...")
+    print("\nRunning VQE optimization...")
 
     # Quick optimization with few iterations for demo
     params = np.random.uniform(-np.pi, np.pi, ansatz.n_params())
-    circuit = ansatz.construct_circuit(params)
+    ansatz.construct_circuit(params)
     energy = vqe.energy(params)
     print(f"Initial energy (random params): {energy:.6f}")
 
     result = vqe.run(max_iterations=50, convergence_threshold=1e-4)
-    print(f"\nVQE Results:")
+    print("\nVQE Results:")
     print(f"  Optimal energy: {result.optimal_energy:.6f}")
     print(f"  Exact energy:   {eigenvalues[0]:.6f}")
     print(f"  Error:          {abs(result.optimal_energy - eigenvalues[0]):.6f}")
@@ -143,9 +143,9 @@ def example_qaoa_maxcut():
     edges = [(0, 1), (1, 2), (2, 0)]
     n_nodes = 3
 
-    print(f"\nGraph: Triangle (3 nodes, 3 edges)")
+    print("\nGraph: Triangle (3 nodes, 3 edges)")
     print(f"Edges: {edges}")
-    print(f"Expected max cut: 2 (cut any edge)")
+    print("Expected max cut: 2 (cut any edge)")
 
     maxcut = MaxCutQAOA(edges, n_nodes=n_nodes, p=2)
     print(f"\nQAOA depth: {maxcut.p}")
@@ -213,7 +213,7 @@ def example_hydrogen_molecule():
 
     # H2 Hamiltonian
     H = Hamiltonian.hydrogen_molecule()
-    print(f"\nH2 molecule Hamiltonian (STO-3G basis)")
+    print("\nH2 molecule Hamiltonian (STO-3G basis)")
     print(f"Number of qubits: {H.n_qubits}")
     print(f"Number of Pauli terms: {H.n_terms}")
 
@@ -240,7 +240,6 @@ def example_utils():
     from quantumflow.utils.math import (
         fidelity, trace_distance, purity, von_neumann_entropy,
         state_to_bloch, bloch_to_state, random_density_matrix,
-        partial_trace,
     )
 
     # State comparison
@@ -273,7 +272,7 @@ def example_utils():
 
     # Random density matrix
     rho = random_density_matrix(2)
-    print(f"\nRandom density matrix:")
+    print("\nRandom density matrix:")
     print(f"  Purity: {purity(rho):.6f}")
     print(f"  Entropy: {von_neumann_entropy(rho):.6f}")
 

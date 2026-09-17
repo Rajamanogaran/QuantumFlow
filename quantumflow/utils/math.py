@@ -4,7 +4,7 @@ Mathematical Utilities for Quantum Computing
 """
 
 import numpy as np
-from typing import Optional, List, Tuple, Dict, Any, Union
+from typing import Optional, List, Dict
 
 
 def kron(*matrices: np.ndarray) -> np.ndarray:
@@ -87,7 +87,7 @@ def partial_trace(rho: np.ndarray, qubits_to_keep: List[int], n_qubits: int) -> 
     >>> reduced = partial_trace(rho, [0], 2)
     >>> assert np.allclose(reduced, np.eye(2) / 2)
     """
-    d = 2 ** n_qubits
+    2 ** n_qubits
     rho = rho.reshape([2] * 2 * n_qubits)
 
     qubits_to_trace = [q for q in range(n_qubits) if q not in qubits_to_keep]

@@ -6,8 +6,7 @@ Provides visualization of quantum circuits in text, matplotlib,
 and LaTeX formats.
 """
 
-import numpy as np
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Any, Tuple
 from enum import Enum
 
 

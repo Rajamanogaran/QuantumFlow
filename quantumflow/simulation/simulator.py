@@ -42,10 +42,9 @@ from __future__ import annotations
 import abc
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import (
     Any,
-    Callable,
     Dict,
     List,
     Optional,
@@ -82,6 +81,32 @@ __all__ = [
 _COMPLEX_DTYPE = np.complex128
 _FLOAT_DTYPE = np.float64
 _TOLERANCE = 1e-12
+
+
+def _measurements_are_terminal(circuit: QuantumCircuit) -> bool:
+    """True if the circuit contains measurements and every one of them
+    comes after every gate (no gate follows any measurement)."""
+    seen_measurement = False
+    for op in circuit.data:
+        if isinstance(getattr(op, "gate", None), Measurement):
+            seen_measurement = True
+        elif seen_measurement:
+            return False
+    return seen_measurement
+
+
+def _strip_terminal_measurements(circuit: QuantumCircuit) -> QuantumCircuit:
+    """Copy of the circuit with all (terminal) measurement ops removed.
+
+    Only valid when :func:`_measurements_are_terminal` returns True.
+    """
+    gates_only = circuit.copy()
+    gates_only._data = [
+        op
+        for op in gates_only._data
+        if not isinstance(getattr(op, "gate", None), Measurement)
+    ]
+    return gates_only
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +543,7 @@ class StatevectorSimulator(Simulator):
             precision=self._config.precision,
             seed=self._config.seed,
         )
+        self._rng = np.random.default_rng(self._config.seed)
 
     @property
     def config(self) -> BackendConfig:
@@ -570,22 +596,72 @@ class StatevectorSimulator(Simulator):
         # Compute probabilities
         probs = self._backend.probabilities(final_state)
 
-        # Sample if shots > 0
+        # Sample if shots > 0. Circuits containing measurement operations
+        # are re-executed **per shot** so that every shot sees a fresh
+        # collapse (collapse-once-then-sample gave wrong statistics for
+        # mid-circuit measurements, e.g. iterative phase estimation).
         counts: Dict[str, int] = {}
         memory: List[str] = []
         if shots > 0:
-            counts = self._backend.sample(final_state, shots, circuit.num_qubits)
-            # Build memory list
-            all_shots: Dict[str, List[str]] = {}
-            rng = np.random.default_rng(self._config.seed)
-            for bitstring, count in counts.items():
-                all_shots[bitstring] = [bitstring] * count
-            memory_list: List[str] = []
-            for bitstring, shots_list in all_shots.items():
-                memory_list.extend(shots_list)
-            # Shuffle for randomness
-            rng.shuffle(memory_list)
-            memory = memory_list[:shots]
+            has_measurements = any(
+                isinstance(getattr(op, "gate", None), Measurement)
+                for op in circuit.data
+            )
+            if has_measurements:
+                measured_qubits = sorted({
+                    q for op in circuit.data
+                    if isinstance(getattr(op, "gate", None), Measurement)
+                    for q in op.qubits
+                })
+                n = circuit.num_qubits
+                if _measurements_are_terminal(circuit):
+                    # All measurements act after every gate: every shot is an
+                    # independent sample of ONE final distribution. Execute
+                    # the gates once (dropping the trailing measurement ops,
+                    # which would otherwise collapse the state) and sample
+                    # each shot from the exact distribution — identical
+                    # statistics to per-shot execution, vastly faster.
+                    gates_only = _strip_terminal_measurements(circuit)
+                    pre_state = self._backend.run_circuit(gates_only, init)
+                    dist = np.real(np.abs(pre_state) ** 2)
+                    total = dist.sum()
+                    if total > 0:
+                        dist = dist / total
+                    for idx in self._rng.choice(len(dist), size=shots, p=dist):
+                        bits = "".join(
+                            str((int(idx) >> (n - 1 - q)) & 1) for q in measured_qubits
+                        )
+                        counts[bits] = counts.get(bits, 0) + 1
+                        memory.append(bits)
+                else:
+                    for _ in range(shots):
+                        shot_state = self._backend.run_circuit(
+                            circuit,
+                            np.array(init, copy=True) if init is not None else None,
+                        )
+                        shot_probs = np.real(np.abs(shot_state) ** 2)
+                        total = shot_probs.sum()
+                        if total > 0:
+                            shot_probs = shot_probs / total
+                        idx = int(self._rng.choice(len(shot_probs), p=shot_probs))
+                        bits = "".join(
+                            str((idx >> (n - 1 - q)) & 1) for q in measured_qubits
+                        )
+                        counts[bits] = counts.get(bits, 0) + 1
+                        memory.append(bits)
+            else:
+                counts = self._backend.sample(final_state, shots, circuit.num_qubits)
+                # Build memory list
+                all_shots: Dict[str, List[str]] = {}
+                rng = np.random.default_rng(self._config.seed)
+                for bitstring, count in counts.items():
+                    all_shots[bitstring] = [bitstring] * count
+                memory_list: List[str] = []
+                for bitstring, shots_list in all_shots.items():
+                    memory_list.extend(shots_list)
+                # Shuffle for randomness
+                rng.shuffle(memory_list)
+                memory = memory_list[:shots]
 
         elapsed = time.perf_counter() - t0
 
@@ -746,6 +822,7 @@ class DensityMatrixSimulator(Simulator):
             precision=self._config.precision,
             seed=self._config.seed,
         )
+        self._rng = np.random.default_rng(self._config.seed)
         self._noise_model = noise_model
 
     @property
@@ -801,13 +878,67 @@ class DensityMatrixSimulator(Simulator):
         counts: Dict[str, int] = {}
         memory: List[str] = []
         if shots > 0:
-            counts = self._backend.sample(final_rho, shots, circuit.num_qubits)
-            memory_list: List[str] = []
-            for bitstring, count in counts.items():
-                memory_list.extend([bitstring] * count)
-            rng = np.random.default_rng(self._config.seed)
-            rng.shuffle(memory_list)
-            memory = memory_list[:shots]
+            has_measurements = any(
+                isinstance(getattr(op, "gate", None), Measurement)
+                for op in circuit.data
+            )
+            if has_measurements:
+                measured_qubits = sorted({
+                    q for op in circuit.data
+                    if isinstance(getattr(op, "gate", None), Measurement)
+                    for q in op.qubits
+                })
+                dim = final_rho.shape[0]
+                n = circuit.num_qubits
+                if _measurements_are_terminal(circuit):
+                    # Terminal measurements: one gates-only execution gives
+                    # the exact final distribution; every shot is an
+                    # independent sample from it (identical statistics to
+                    # per-shot execution, vastly faster).
+                    gates_only = _strip_terminal_measurements(circuit)
+                    pre_rho = self._backend.run_circuit(
+                        gates_only, init, noise_model=self._noise_model
+                    )
+                    dist = np.real(np.diag(pre_rho))
+                    total = dist.sum()
+                    if total > 0:
+                        dist = dist / total
+                    for idx in self._rng.choice(dim, size=shots, p=dist):
+                        bits = "".join(
+                            str((int(idx) >> (n - 1 - q)) & 1) for q in measured_qubits
+                        )
+                        counts[bits] = counts.get(bits, 0) + 1
+                        memory.append(bits)
+                else:
+                    # Mid-circuit measurements: re-apply the whole circuit
+                    # for each shot so every shot gets a fresh collapse.
+                    for _ in range(shots):
+                        shot_rho = (
+                            np.array(init, copy=True)
+                            if init is not None
+                            else None
+                        )
+                        shot_rho = self._backend.run_circuit(
+                            circuit, shot_rho, noise_model=self._noise_model
+                        )
+                        shot_probs = np.real(np.diag(shot_rho))
+                        total = shot_probs.sum()
+                        if total > 0:
+                            shot_probs = shot_probs / total
+                        idx = int(self._rng.choice(dim, p=shot_probs))
+                        bits = "".join(
+                            str((idx >> (n - 1 - q)) & 1) for q in measured_qubits
+                        )
+                        counts[bits] = counts.get(bits, 0) + 1
+                        memory.append(bits)
+            else:
+                counts = self._backend.sample(final_rho, shots, circuit.num_qubits)
+                memory_list: List[str] = []
+                for bitstring, count in counts.items():
+                    memory_list.extend([bitstring] * count)
+                rng = np.random.default_rng(self._config.seed)
+                rng.shuffle(memory_list)
+                memory = memory_list[:shots]
 
         elapsed = time.perf_counter() - t0
 
@@ -980,7 +1111,6 @@ def _apply_gate_mps(
     qubits = sorted(qubits)
     k = len(qubits)
     tensors = mps.copy().tensors
-    n = mps.num_qubits
 
     if k == 1:
         q = qubits[0]
@@ -990,7 +1120,7 @@ def _apply_gate_mps(
         d_right = t.shape[2]
 
         # Reshape: (d_left, 2, d_right) -> (d_left * 2, d_right)
-        t_reshaped = t.reshape(d_left * 2, d_right)
+        t.reshape(d_left * 2, d_right)
         # Apply gate: (2, 2) acts on the physical index
         # We need: new_t[a, i, b] = sum_j U[i,j] * t[a, j, b]
         # Use einsum
@@ -1083,7 +1213,7 @@ def _embed_operator_simple(
     """Embed operator on target qubits into full Hilbert space.
     Simplified version for small systems."""
     k = len(qubits)
-    dim = 1 << n
+    1 << n
     if k == n:
         return operator
 
@@ -1164,7 +1294,7 @@ def _mps_swap_adjacent(
 
     dL = t1.shape[0]
     dR = t2.shape[2]
-    dM = t1.shape[2]
+    t1.shape[2]
 
     # theta[a, i, j, b] = t1[a, i, s] * t2[s, j, b]
     theta = np.einsum("ais,sjb->aijb", t1, t2)
@@ -1314,13 +1444,16 @@ class MPSimulator(Simulator):
 
     def _get_gate_matrix(self, gate: Gate, params: Tuple[float, ...] = ()) -> np.ndarray:
         cache_key = (gate.name, params)
-        if cache_key in self._gate_cache:
-            return self._gate_cache[cache_key]
+        cached = self._gate_cache.get(cache_key)
+        if cached is not None:
+            cached_gate, cached_mat = cached
+            if cached_gate is gate:
+                return cached_mat
         if params:
             mat = gate.to_matrix(*params)
         else:
             mat = gate.matrix
-        self._gate_cache[cache_key] = mat
+        self._gate_cache[cache_key] = (gate, mat)
         return mat
 
     def _check_qubits(self, circuit: QuantumCircuit) -> None:
@@ -1385,14 +1518,63 @@ class MPSimulator(Simulator):
         counts: Dict[str, int] = {}
         memory: List[str] = []
         if shots > 0:
-            outcomes = self._rng.choice(len(probs), size=shots, p=probs)
-            for o in outcomes:
-                bits = format(int(o), f"0{n}b")
-                counts[bits] = counts.get(bits, 0) + 1
-            for bitstring, count in counts.items():
-                memory.extend([bitstring] * count)
-            self._rng.shuffle(memory)
-            memory = memory[:shots]
+            has_measurements = any(
+                isinstance(getattr(op, "gate", None), Measurement)
+                for op in circuit.data
+            )
+            if has_measurements:
+                # Per-shot execution with fresh collapse each shot.
+                measured_qubits = sorted({
+                    q for op in circuit.data
+                    if isinstance(getattr(op, "gate", None), Measurement)
+                    for q in op.qubits
+                })
+
+                def _run_shot() -> np.ndarray:
+                    if initial_state is not None:
+                        sv0 = initial_state.data if isinstance(initial_state, Statevector) \
+                            else np.asarray(initial_state, dtype=_COMPLEX_DTYPE)
+                        shot_mps = statevector_to_mps(sv0, n, self._max_bond)
+                    else:
+                        shot_mps = _mps_zero_state(n)
+                    for op in circuit.data:
+                        if isinstance(op, Barrier):
+                            continue
+                        if isinstance(op, Reset):
+                            shot_mps = self._apply_reset_mps(shot_mps, op.qubits, n)
+                            continue
+                        if isinstance(op.gate, Measurement):
+                            shot_mps = self._apply_measurement_mps(shot_mps, op.qubits, n)
+                            continue
+                        gate_mat = self._get_gate_matrix(op.gate, op.params)
+                        shot_mps = _apply_gate_mps(shot_mps, gate_mat, op.qubits, self._max_bond)
+                    sv = mps_to_statevector(shot_mps)
+                    nrm = np.linalg.norm(sv)
+                    if nrm > _TOLERANCE:
+                        sv = sv / nrm
+                    return sv
+
+                for _ in range(shots):
+                    shot_sv = _run_shot()
+                    shot_probs = np.real(np.abs(shot_sv) ** 2)
+                    total = shot_probs.sum()
+                    if total > _TOLERANCE:
+                        shot_probs = shot_probs / total
+                    idx = int(self._rng.choice(len(shot_probs), p=shot_probs))
+                    bits = "".join(
+                        str((idx >> (n - 1 - q)) & 1) for q in measured_qubits
+                    )
+                    counts[bits] = counts.get(bits, 0) + 1
+                    memory.append(bits)
+            else:
+                outcomes = self._rng.choice(len(probs), size=shots, p=probs)
+                for o in outcomes:
+                    bits = format(int(o), f"0{n}b")
+                    counts[bits] = counts.get(bits, 0) + 1
+                for bitstring, count in counts.items():
+                    memory.extend([bitstring] * count)
+                self._rng.shuffle(memory)
+                memory = memory[:shots]
 
         elapsed = time.perf_counter() - t0
 
@@ -1493,8 +1675,8 @@ class MPSimulator(Simulator):
         tensors = mps.copy().tensors
         for q in qubits:
             t = tensors[q]  # (dL, 2, dR)
-            dL = t.shape[0]
-            dR = t.shape[2]
+            t.shape[0]
+            t.shape[2]
             # Zero out the |1⟩ component
             t_zero = t.copy()
             t_zero[:, 1, :] = 0.0

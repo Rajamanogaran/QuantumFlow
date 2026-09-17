@@ -4,7 +4,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.0-orange.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-0.2.0-orange.svg)](pyproject.toml)
 
 ---
 
@@ -118,27 +118,33 @@ The framework is structured around 10 tightly integrated modules, totaling over 
 # Clone or download the package
 cd quantumflow/
 
-# Install in development mode (recommended)
+# Install with ALL dependencies (core + TensorFlow/Keras)
+pip install .
+
+# Install in development mode (recommended when hacking on the source)
 pip install -e .
 
-# Install with all optional dependencies
-pip install -e ".[all]"
-
-# Install with GPU support (requires CUDA)
-pip install -e ".[gpu]"
+# Optional extras
+pip install -e ".[gpu]"    # GPU support (requires CUDA)
+pip install -e ".[dev]"    # development tools (pytest, ruff, mypy, ...)
 ```
+
+TensorFlow and Keras (>= 3) are installed **automatically** on Python
+3.9–3.12 — no extra needed. On Python >= 3.13 TensorFlow wheels are not
+published yet, so QuantumFlow installs with the pure-Python stack and
+the quantum-ML modules raise a clear "install tensorflow" message when
+used.
 
 ### Install Dependencies Separately
 
+Only needed if you want to manage the stack by hand:
+
 ```bash
 # Core dependencies
-pip install numpy scipy
+pip install numpy scipy matplotlib networkx sympy tqdm joblib opt-einsum
 
-# TensorFlow/Keras integration
+# Quantum-ML stack (installed automatically by pip install quantumflow)
 pip install tensorflow keras
-
-# Visualization
-pip install matplotlib
 
 # Development tools
 pip install pytest pytest-cov mypy ruff black
@@ -185,23 +191,25 @@ print("Measurement counts:", result.get_counts())
 ### 2. Build a Quantum Neural Network with TensorFlow
 
 ```python
-import quantumflow.tensorflow as qf_tf
 import tensorflow as tf
 import numpy as np
+from quantumflow.keras.layers import KerasQDense
 
-# Generate synthetic data
-X = np.random.randn(1000, 4).astype(np.float32)
+# Generate synthetic data (quantum layers are simulator-backed:
+# keep demos small — a few hundred samples train in ~a minute)
+X = np.random.randn(200, 4).astype(np.float32)
 y = (X[:, 0] + X[:, 1] > 0).astype(np.float32)
 
-# Build a hybrid quantum-classical model
+# Build a hybrid quantum-classical model (Keras 3)
 model = tf.keras.Sequential([
-    tf.keras.layers.InputLayer(input_shape=(4,)),
-    qf_tf.QDenseLayer(8, n_qubits=4, n_layers=3),
+    tf.keras.layers.Input(shape=(4,)),
+    KerasQDense(units=8, n_qubits=4, n_layers=2),
     tf.keras.layers.Dense(1, activation='sigmoid'),
 ])
 
 model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-model.fit(X, y, epochs=10, batch_size=32, validation_split=0.2)
+model.fit(X, y, epochs=2, batch_size=32, validation_split=0.2, verbose=0)
+print("training complete")
 ```
 
 ### 3. Solve a Quantum Chemistry Problem with VQE
@@ -252,31 +260,37 @@ The core module provides the fundamental building blocks: gates, circuits, state
 #### Gates (50+)
 
 ```python
-from quantumflow.core.gate import *
+import numpy as np
+from quantumflow.core.gate import (
+    HGate, XGate, RXGate, U3Gate, CNOTGate, SwapGate, ToffoliGate, UnitaryGate,
+)
 
-# Single-qubit gates
-h = HGate()           # Hadamard
-x = XGate()           # Pauli X (NOT)
-rx = RXGate(theta=0.5)  # Rotation about X
-u = U3Gate(phi=0.1, theta=0.2, lam=0.3)  # General unitary
+# Single-qubit gates (parameterized gates take a sequence of parameters)
+h = HGate()                     # Hadamard
+x = XGate()                     # Pauli X (NOT)
+rx = RXGate([0.5])              # Rotation about X by 0.5
+u3 = U3Gate([0.1, 0.2, 0.3])    # General single-qubit unitary
 
 # Multi-qubit gates
-cnot = CNOTGate()     # Controlled-NOT
-swap = SwapGate()     # SWAP
-toffoli = ToffoliGate()  # Controlled-controlled-NOT
+cnot = CNOTGate()               # Controlled-NOT
+swap = SwapGate()               # SWAP
+toffoli = ToffoliGate()         # Controlled-controlled-NOT
 
 # Custom unitary
+my_matrix = np.array([[0, 1], [1, 0]], dtype=complex)
 custom = UnitaryGate(my_matrix, name="MyGate")
 
 # Gate operations
-inv = h.dagger()      # Adjoint (inverse)
-ctrl = h.controlled(2)  # Double-controlled H
-pwr = rx.power(3)     # RX(3*theta)
+matrix = h.matrix               # 2x2 unitary as a numpy array
+adjoint = h.matrix.conj().T     # Adjoint (inverse)
+ctrl = h.controlled(2)          # Double-controlled H
+print("RX(0.5):", np.round(rx.matrix, 4))
 ```
 
 #### Quantum Circuit
 
 ```python
+import numpy as np
 from quantumflow import QuantumCircuit
 
 qc = QuantumCircuit(4)
@@ -286,9 +300,9 @@ qc.h(0)
 qc.x(1)
 qc.y(2)
 qc.z(3)
-qc.rx(np.pi/4, 0)
-qc.ry(np.pi/3, 1)
-qc.rz(np.pi/6, 2)
+qc.rx(np.pi / 4, 0)
+qc.ry(np.pi / 3, 1)
+qc.rz(np.pi / 6, 2)
 
 # Multi-qubit gates
 qc.cx(0, 1)       # CNOT
@@ -296,37 +310,44 @@ qc.cz(1, 2)       # Controlled-Z
 qc.swap(2, 3)     # SWAP
 qc.ccx(0, 1, 2)   # Toffoli
 
-# Circuit operations
-qc.barrier()
-qc.measure(0, 0)  # Measure qubit 0 to classical bit 0
-
-# Properties
+# Properties (width is a property; the rest are methods)
 print(f"Depth: {qc.depth()}")
-print(f"Width: {qc.width()}")
+print(f"Width: {qc.width}")
 print(f"Size: {qc.size()}")
 print(f"Gate counts: {qc.count_gates()}")
 
-# Advanced operations
+# Advanced operations (before measurement: measurements are irreversible)
 inv_qc = qc.inverse()
 combined = qc.compose(inv_qc)
 unitary = qc.to_unitary()
 qasm = qc.qasm()  # OpenQASM 2.0
+print(qasm.splitlines()[0])
+
+# Circuit operations
+qc.barrier()
+qc.measure(0, 0)  # Measure qubit 0 to classical bit 0
 ```
 
 #### Quantum States
 
 ```python
+import numpy as np
 from quantumflow import Statevector, DensityMatrix
 
 # Create states
-sv = Statevector.from_label("00+")  # |00+>
-sv = Statevector(np.array([1, 0, 0, 1]) / np.sqrt(2))
+sv = Statevector.from_label("00+")                     # |00+>
+sv = Statevector(np.array([1, 0, 0, 1]) / np.sqrt(2))  # (|00> + |11>)/sqrt(2)
 
 # Operations
 probs = sv.probabilities()
-result = sv.measure()            # Single measurement
+outcome, new_sv = sv.measure()   # Single measurement -> (outcome, post-state)
 counts = sv.sample(shots=1000)   # Multiple shots
-expect = sv.expectation(Z_obs)   # Expectation value
+
+# Expectation value of an observable (Z tensor Z)
+Z = np.diag([1, -1])
+z_obs = np.kron(Z, Z)
+expect = sv.expectation(z_obs)
+print(f"<ZZ> = {expect:.4f}")
 
 # Density matrices
 dm = DensityMatrix.from_statevector(sv)
@@ -335,7 +356,8 @@ print(f"Entropy: {dm.von_neumann_entropy()}")
 print(f"Is pure: {dm.is_pure()}")
 
 # Partial trace
-reduced = dm.partial_trace(keep_qubits=[0])
+reduced = dm.partial_trace(qubits_to_keep=[0])
+print("reduced purity:", reduced.purity())
 ```
 
 ### 2. Simulation Engine
@@ -367,12 +389,17 @@ result.plot_histogram()
 
 ```python
 from quantumflow import QuantumCircuit, DensityMatrixSimulator
-from quantumflow.noise.noise_model import NoiseConfig
+from quantumflow.noise.noise_model import NoiseConfig, NoiseModel
+
+qc = QuantumCircuit(2)
+qc.h(0)
+qc.cx(0, 1)
+qc.measure([0, 1], [0, 1])
 
 config = NoiseConfig(single_gate_error=0.01, two_gate_error=0.05)
-sim = DensityMatrixSimulator(noise_config=config)
-
+sim = DensityMatrixSimulator(noise_model=NoiseModel(config))
 result = sim.run(qc, shots=4096)
+print("noisy counts:", result.get_counts())
 ```
 
 #### MPS Simulator (large systems)
@@ -395,23 +422,22 @@ Build quantum-enhanced neural network components.
 #### Quantum Dense Layer
 
 ```python
+import numpy as np
 from quantumflow.neural.quantum_dense import QuantumDense
-import tensorflow as tf
 
-# Quantum dense layer (drop-in for tf.keras.layers.Dense)
+# Quantum dense layer — a plain layer with parameter-shift gradients.
+# (For tf.keras.Sequential models use quantumflow.keras.KerasQDense instead.)
 q_dense = QuantumDense(
-    units=10,
+    10,                      # output_dim
     n_qubits=5,
     n_layers=3,
     activation='quantum_relu',
 )
 
-# Use in a TF model
-model = tf.keras.Sequential([
-    tf.keras.layers.InputLayer(input_shape=(5,)),
-    q_dense,
-    tf.keras.layers.Dense(1),
-])
+# Forward pass on a batch of 5-dimensional inputs
+batch = np.random.randn(4, 5).astype(np.float32)
+out = q_dense(batch)
+print("QuantumDense output shape:", out.shape)
 ```
 
 #### Variational Circuit
@@ -457,7 +483,8 @@ q_conv = QuantumConv2D(
     n_qubits=4,
     n_layers=2,
 )
-q_pool = QuantumPool2D(pool_type='quantum', n_qubits=4)
+q_pool = QuantumPool2D(pool_size=2, pool_type='quantum', n_qubits=4)
+print("conv/pool layers ready")
 ```
 
 ### 4. TensorFlow Integration
@@ -470,7 +497,6 @@ Native TensorFlow quantum layers with custom gradients.
 
 ```python
 import quantumflow.tensorflow as qf_tf
-import tensorflow as tf
 
 # Quantum dense layer with parameter-shift gradients
 q_layer = qf_tf.QDenseLayer(
@@ -483,7 +509,7 @@ q_layer = qf_tf.QDenseLayer(
 q_attn = qf_tf.QAttentionLayer(
     n_qubits=4,
     n_layers=2,
-    num_heads=4,
+    heads=4,
 )
 
 # Quantum feature map
@@ -494,11 +520,21 @@ q_fm = qf_tf.QFeatureMapLayer(
 
 # Quantum residual block
 q_res = qf_tf.QResidualLayer(n_qubits=4, n_layers=2)
+print("quantum layers ready")
 ```
 
 #### Pre-built Models
 
 ```python
+import numpy as np
+import quantumflow.tensorflow as qf_tf
+
+# Synthetic binary-classification data
+X = np.random.randn(200, 4).astype(np.float32)
+y = (X[:, 0] + X[:, 1] > 0).astype(np.int32)
+X_train, y_train = X[:160], y[:160]
+X_test, y_test = X[160:], y[160:]
+
 # Quantum Classifier
 classifier = qf_tf.QClassifier(
     n_qubits=4,
@@ -506,28 +542,24 @@ classifier = qf_tf.QClassifier(
     n_classes=2,
 )
 classifier.compile(optimizer='adam', loss='sparse_categorical_crossentropy')
-classifier.fit(X_train, y_train, epochs=20)
+classifier.fit(X_train, y_train, epochs=2, verbose=0)
 predictions = classifier.predict(X_test)
+print("predictions:", predictions[:5])
 
 # Quantum Autoencoder
 autoencoder = qf_tf.QAutoencoder(
     n_qubits=6,
-    n_trash_qubits=2,
+    n_latent=2,
     n_layers=3,
 )
 
 # Quantum GAN
 qgan = qf_tf.QGAN(
-    generator_qubits=4,
-    generator_layers=3,
-    discriminator_layers=[64, 32, 1],
+    n_qubits=4,
+    n_layers=3,
+    latent_dim=4,
 )
-
-# Hybrid Model
-hybrid = qf_tf.QHybridModel()
-hybrid.add_classical_layer(tf.keras.layers.Dense(32, activation='relu'))
-hybrid.add_quantum_layer(qf_tf.QDenseLayer(8, n_qubits=4, n_layers=2))
-hybrid.add_classical_layer(tf.keras.layers.Dense(1, activation='sigmoid'))
+print("models ready")
 ```
 
 #### Quantum Optimizers
@@ -544,7 +576,8 @@ opt = ParameterShiftOptimizer(learning_rate=0.01)
 opt = QuantumAdam(learning_rate=0.001)
 
 # Gradient-free optimization for noisy hardware
-opt = SpsaOptimizer(learning_rate=0.01, a=1.0, c=0.1)
+opt = SpsaOptimizer(learning_rate=0.01, perturbation=0.1)
+print("optimizers ready")
 ```
 
 ### 5. Keras Integration
@@ -554,28 +587,32 @@ opt = SpsaOptimizer(learning_rate=0.01, a=1.0, c=0.1)
 Keras 3-compatible quantum layers with multi-backend support.
 
 ```python
+import numpy as np
 import quantumflow.keras as qf_keras
 import keras
+
+# Synthetic data
+X_train = np.random.randn(200, 4).astype(np.float32)
+y_train = (X_train[:, 0] + X_train[:, 1] > 0).astype(np.float32)
 
 # Keras quantum dense
 model = keras.Sequential([
     keras.layers.Input(shape=(4,)),
-    qf_keras.KerasQDense(units=8, n_qubits=4, n_layers=3),
+    qf_keras.KerasQDense(units=8, n_qubits=4, n_layers=2),
     qf_keras.KerasQBatchNormalization(),
     keras.layers.Dense(1, activation='sigmoid'),
 ])
 
 model.compile(optimizer='adam', loss='binary_crossentropy')
-model.fit(X_train, y_train, epochs=10)
+model.fit(X_train, y_train, epochs=2, verbose=0)
 
 # Pre-built classifier
 classifier = qf_keras.KerasQuantumClassifier(
     n_qubits=4,
-    n_layers=3,
-    n_classes=3,
+    n_layers=2,
+    n_classes=2,
 )
-classifier.compile(optimizer='adam', loss='sparse_categorical_crossentropy')
-classifier.fit(X, y, epochs=20)
+print("keras models ready")
 ```
 
 ### 6. Quantum Algorithms
@@ -709,7 +746,12 @@ ch = ThermalRelaxationChannel(
 #### Noise Model
 
 ```python
+from quantumflow import QuantumCircuit
 from quantumflow.noise.noise_model import NoiseModel, NoiseConfig, GateNoise, NoiseType
+
+quantum_circuit = QuantumCircuit(2)
+quantum_circuit.h(0)
+quantum_circuit.cx(0, 1)
 
 config = NoiseConfig(
     single_gate_error=0.001,
@@ -721,32 +763,38 @@ config.gate_noise['cx'] = GateNoise('cx', NoiseType.DEPOLARIZING, 0.02)
 
 noise = NoiseModel(config)
 noisy_circuit = noise.apply_noise(quantum_circuit)
+print("noisy ops:", len(noisy_circuit.data), "vs clean:", len(quantum_circuit.data))
 ```
 
 #### Error Mitigation
 
 ```python
+import numpy as np
 from quantumflow.noise.error_mitigation import (
-    ZeroNoiseExtrapolation, MeasurementErrorMitigation,
-    VirtualDistillation,
+    ZeroNoiseExtrapolation, MeasurementErrorMitigation, VirtualDistillation,
 )
 
 # Zero Noise Extrapolation
 zne = ZeroNoiseExtrapolation(
     noise_factors=[1.0, 2.0, 3.0],
-    method='richardson',  # or 'exponential', 'linear'
+    method='linear',  # or 'richardson', 'exponential'
 )
-result = zne.mitigate(counts, noisy_expectations=[e1, e2, e3])
+counts = {'00': 480, '11': 470, '01': 25, '10': 25}
+expectations = [0.95, 0.86, 0.79]   # one observable value per noise factor
+result = zne.mitigate(counts, noisy_expectations=expectations)
+print("mitigated value:", round(result['mitigated_value'], 4))
 
 # Measurement Error Mitigation
 mem = MeasurementErrorMitigation(n_qubits=4)
-cm = mem.create_confusion_matrix(n_qubits=4, assignment_probs={0: 0.02, 1: 0.02, 2: 0.01, 3: 0.015})
+cm = mem.create_confusion_matrix(4, {0: 0.02, 1: 0.02, 2: 0.01, 3: 0.01})
 mem.calibrate(confusion_matrix=cm)
-mitigated = mem.mitigate(raw_counts)
+mitigated = mem.mitigate(counts)
+print("mitigated counts:", mitigated['mitigated_counts'])
 
 # Virtual Distillation
+rho = np.diag([0.9, 0.03, 0.03, 0.04]).astype(complex)
 vd = VirtualDistillation(power=2)
-result = vd.mitigate(rho=state_density_matrix)
+print("distilled purity:", round(vd.mitigate(rho=rho)['purity'], 4))
 ```
 
 ### 8. Visualization
@@ -799,6 +847,8 @@ bloch.show(filename="bloch.png")
 **Package**: `quantumflow.utils`
 
 ```python
+import numpy as np
+from quantumflow import HGate, XGate, Statevector
 from quantumflow.utils.math import (
     kron, partial_trace, fidelity, trace_distance,
     purity, von_neumann_entropy, expectation_value,
@@ -808,58 +858,69 @@ from quantumflow.utils.math import (
 
 # Tensor products
 H_X = kron(HGate().matrix, XGate().matrix)
+print("H(X) shape:", H_X.shape)
 
-# State comparison
-f = fidelity(state1, state2)
+# State comparison (fidelity/trace_distance take density matrices)
+state1 = Statevector.from_label("00").data
+state2 = Statevector.from_label("11").data
+rho1 = np.outer(state1, state1.conj())
+rho2 = np.outer(state2, state2.conj())
+f = fidelity(rho1, rho1)
 d = trace_distance(rho1, rho2)
+print(f"fidelity={f:.4f}  trace_distance={d:.4f}")
 
 # Entropy and purity
+density_matrix = rho1
 p = purity(density_matrix)
 s = von_neumann_entropy(density_matrix)
 
-# Partial trace
-reduced = partial_trace(full_density_matrix, keep_qubits=[0, 2], n_qubits=4)
+# Partial trace (keep qubit 0 of a 2-qubit state)
+reduced = partial_trace(rho1, [0], n_qubits=2)
+print("reduced shape:", reduced.shape)
 
-# Bloch sphere conversions
-bloch_vec = state_to_bloch(np.array([1, 1]) / np.sqrt(2))
-state = bloch_to_state(bloch_vec)
+# Random objects
+u = random_unitary(3)
+rho_r = random_density_matrix(2)
+
+# Bloch vector round-trip
+bloch = state_to_bloch(Statevector.from_label("0").data)
+back = bloch_to_state(bloch)
+print("bloch vector:", np.round(bloch, 4))
 ```
 
 ---
 
 ## Tutorials
 
+> **New:** a complete, verified walkthrough of the whole framework —
+> from qubits to QAOA and quantum machine learning — lives in
+> [`docs/tutorials/complete-tutorial.md`](docs/tutorials/complete-tutorial.md).
+> More advanced material (custom layers, error mitigation in practice,
+> transfer learning) is covered in
+> [`docs/tutorials/advanced-tutorials.md`](docs/tutorials/advanced-tutorials.md).
+
 ### Tutorial 1: Quantum-Classical Hybrid MNIST Classifier
 
 ```python
 import tensorflow as tf
-import quantumflow.tensorflow as qf_tf
 import numpy as np
+from quantumflow.keras.layers import KerasQDense
 
-# Load MNIST (use only 0s and 1s for binary classification)
-(x_train, y_train), (x_test, y_test) = tf.keras.datasets.mnist.load_data()
-mask = (y_train <= 1)
-x_train, y_train = x_train[mask], y_train[mask]
-mask = (y_test <= 1)
-x_test, y_test = x_test[mask], y_test[mask]
-
-# Preprocess: downscale to 4x4 and flatten
-x_train = x_train[..., np.newaxis] / 255.0
-x_train = tf.image.resize(x_train, [4, 4]).numpy().reshape(-1, 16)
-x_test = x_test[..., np.newaxis] / 255.0
-x_test = tf.image.resize(x_test, [4, 4]).numpy().reshape(-1, 16)
+# Synthetic 16-feature binary dataset (stand-in for downsampled images)
+n = 200
+imgs = np.random.rand(n, 4, 4).astype(np.float32)      # "4x4 images"
+X = imgs.reshape(-1, 16)                                # flatten to 16 features
+y = (imgs.mean(axis=(1, 2)) > 0.5).astype(np.float32)   # bright vs dark
 
 # Build hybrid model
 model = tf.keras.Sequential([
-    tf.keras.layers.InputLayer(input_shape=(16,)),
-    tf.keras.layers.Dense(8, activation='relu'),
-    qf_tf.QDenseLayer(4, n_qubits=4, n_layers=2),
+    tf.keras.layers.Input(shape=(16,)),
+    KerasQDense(units=8, n_qubits=4, n_layers=2),
     tf.keras.layers.Dense(1, activation='sigmoid'),
 ])
-
 model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-model.fit(x_train, y_train, epochs=5, batch_size=32, validation_split=0.2)
-print(f"Test accuracy: {model.evaluate(x_test, y_test)[1]:.4f}")
+model.fit(X, y, epochs=2, batch_size=32, validation_split=0.2, verbose=0)
+print("hybrid model trained")
 ```
 
 ### Tutorial 2: Quantum Chemistry - Water Molecule with VQE
@@ -888,32 +949,27 @@ print(f"Converged in {result.iteration_count} iterations")
 ### Tutorial 3: Quantum Generative Adversarial Network
 
 ```python
-import tensorflow as tf
-import quantumflow.tensorflow as qf_tf
 import numpy as np
+import quantumflow.tensorflow as qf_tf
 
-# Generate 2D Gaussian data
-data = np.random.randn(1000, 2).astype(np.float32)
+# 4-D Gaussian data (matches n_qubits=4).  A small sample keeps this
+# demo fast — parameter-shift gradients make QGAN training expensive.
+data = np.random.randn(200, 4).astype(np.float64)
 
 # Build QGAN
 qgan = qf_tf.QGAN(
-    generator_qubits=4,
-    generator_layers=3,
-    discriminator_layers=[32, 16, 1],
+    n_qubits=4,
+    n_layers=3,
     latent_dim=4,
 )
+qgan.compile()
 
-# Compile and train
-qgan.compile(
-    generator_optimizer=tf.keras.optimizers.Adam(0.01),
-    discriminator_optimizer=tf.keras.optimizers.Adam(0.01),
-    loss_fn=tf.keras.losses.BinaryCrossentropy(),
-)
-
-qgan.fit(data, epochs=100, batch_size=64)
+# Train
+qgan.fit(data, epochs=1, batch_size=50, verbose=0)
 
 # Generate samples
-generated = qgan.generate(n_samples=500)
+generated = qgan.generate(n_samples=100)
+print("generated shape:", generated.shape)
 ```
 
 ---
@@ -1132,7 +1188,7 @@ If you use QuantumFlow in your research, please cite:
   title = {QuantumFlow: Advanced Quantum Computing Framework with TensorFlow/Keras Integration},
   author = {Mr M Rajamanogaran,manogaran248@gmail.com},
   year = {2026},
-  version = {0.1.0},
+  version = {0.2.0},
   url = {https://github.com/Rajamanogaran/QuantumFlow.git}
 }
 ```

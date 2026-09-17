@@ -19,19 +19,13 @@ References:
 """
 
 import math
-import numpy as np
-from typing import List, Optional, Union, Callable, Tuple, Dict, Any
+from typing import List, Optional, Union, Callable, Dict, Any
 
-try:
-    from quantumflow.core.circuit import QuantumCircuit
-    from quantumflow.core.gate import (
-        HGate, XGate, ZGate, CNOTGate, CZGate,
-        UnitaryGate, Measurement,
-    )
-    from quantumflow.core.state import Statevector
-    from quantumflow.simulation.simulator import StatevectorSimulator
-except ImportError:
-    pass
+from quantumflow.core.circuit import QuantumCircuit
+from quantumflow.core.gate import (
+    Measurement,
+)
+from quantumflow.simulation.simulator import StatevectorSimulator
 
 
 class GroverSearch:
@@ -227,32 +221,29 @@ class GroverSearch:
 
         oracle = QuantumCircuit(self.n_qubits)
 
-        # Build oracle using phase kickback with an ancilla
-        # O|s> = -|s>, O|x> = |x> for unmarked x
-        if len(self._marked_states) == 1:
-            # Single marked state: use multi-controlled Z
-            target_state = self._marked_states[0]
-            # Apply X gates for 0 bits (flip to all-ones control condition)
-            for i, bit in enumerate(target_state):
-                if bit == '0':
-                    oracle.append(XGate(), [i])
-            # Multi-controlled Z (all qubits control Z on last qubit)
-            oracle.append(ZGate(), [self.n_qubits - 1])
-            # This needs to be a controlled-Z with all preceding qubits as controls
-            # Use MCZ: H on target -> MCX -> H on target
-            # Actually, let's use the diagonal approach
-            # Undo the X gates
-            for i, bit in enumerate(target_state):
-                if bit == '0':
-                    oracle.append(XGate(), [i])
-        else:
-            # Multiple marked states: build from diagonal matrix
-            diagonal = np.ones(2 ** self.n_qubits, dtype=np.complex128)
+        # Build oracle using phase kickback with multi-controlled Z.
+        # O|s> = -|s>, O|x> = |x> for unmarked x.
+        # For each marked state |s>, conjugate an MCZ (phase flip on the
+        # all-ones state) with X gates on the 0-bits of |s>.
+        if self.n_qubits == 1:
+            # Single qubit: Z alone flips |1>; X-conjugate for |0>.
             for state_str in self._marked_states:
-                idx = int(state_str, 2)
-                diagonal[idx] = -1.0
-            oracle_matrix = np.diag(diagonal)
-            oracle.append(UnitaryGate(oracle_matrix, name="Oracle"), list(range(self.n_qubits)))
+                if state_str == '0':
+                    oracle.x(0)
+                oracle.z(0)
+                if state_str == '0':
+                    oracle.x(0)
+        else:
+            controls = list(range(self.n_qubits - 1))
+            target = self.n_qubits - 1
+            for state_str in self._marked_states:
+                for i, bit in enumerate(state_str):
+                    if bit == '0':
+                        oracle.x(i)
+                oracle.mcz(controls, target)
+                for i, bit in enumerate(state_str):
+                    if bit == '0':
+                        oracle.x(i)
 
         self._oracle_circuit = oracle
         return oracle
@@ -283,20 +274,13 @@ class GroverSearch:
             diffusion.h(i)
             diffusion.x(i)
 
-        # Step 3: Multi-controlled Z on |0...0>
-        # MCZ = H(target) -> MCX -> H(target)
-        diffusion.h(self.n_qubits - 1)
-        # MCX with all other qubits as controls
+        # Step 3: Multi-controlled Z. After the X layer this applies a phase
+        # flip on |0...0>, i.e. D = -(2|s><s| - I) up to global phase.
+        # Uses the exact MCZ gate from the core library.
         if self.n_qubits == 1:
             diffusion.z(0)
-        elif self.n_qubits == 2:
-            diffusion.cz(0, 1)
         else:
-            # For n > 2, use Toffoli decomposition
-            controls = list(range(self.n_qubits - 1))
-            target = self.n_qubits - 1
-            self._apply_mcx(diffusion, controls, target)
-        diffusion.h(self.n_qubits - 1)
+            diffusion.mcz(list(range(self.n_qubits - 1)), self.n_qubits - 1)
 
         # Step 4 & 5: X then H on all qubits
         for i in range(self.n_qubits):
@@ -304,27 +288,6 @@ class GroverSearch:
             diffusion.h(i)
 
         return diffusion
-
-    @staticmethod
-    def _apply_mcx(circuit: 'QuantumCircuit', controls: List[int], target: int) -> None:
-        """Apply multi-controlled X gate using Toffoli decomposition."""
-        n_controls = len(controls)
-        if n_controls == 1:
-            circuit.cx(controls[0], target)
-        elif n_controls == 2:
-            circuit.cx(controls[0], target)
-            circuit.cx(controls[1], target)
-        else:
-            # Gray code / standard decomposition for large control sets
-            # Use intermediate ancilla approach (simplified)
-            # Recursive decomposition
-            mid = n_controls // 2
-            if mid > 0:
-                # Decompose into smaller MCX gates
-                temp = controls[0]  # Reuse first control as temp
-                GroverSearch._apply_mcx(circuit, controls[:mid], temp)
-                GroverSearch._apply_mcx(circuit, [temp] + controls[mid:], target)
-                GroverSearch._apply_mcx(circuit, controls[:mid], temp)
 
     def construct_circuit(self) -> 'QuantumCircuit':
         """

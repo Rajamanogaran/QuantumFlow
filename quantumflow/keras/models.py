@@ -33,11 +33,9 @@ import math
 import time
 from typing import (
     Any,
-    Callable,
     Dict,
     List,
     Optional,
-    Sequence,
     Tuple,
     Union,
 )
@@ -529,7 +527,7 @@ class KerasQuantumClassifier:
 
                 # Backward via finite differences
                 grad_kernel = np.zeros_like(self._kernel)
-                grad_bias = np.zeros_like(self._bias)
+                np.zeros_like(self._bias)
                 grad_var = np.zeros_like(self._var_params)
                 grad_readout = np.zeros_like(self._readout)
                 eps = 1e-5
@@ -1836,7 +1834,6 @@ class KerasHybridModel:
         y = np.asarray(y, dtype=np.float64)
         if y.ndim == 1:
             y = y.reshape(-1, 1)
-        lr = self._learning_rate
 
         for epoch in range(epochs):
             t0 = time.time()
@@ -1855,7 +1852,7 @@ class KerasHybridModel:
             self._history["loss"].append(float(avg))
             if verbose > 0:
                 print(f"Epoch {epoch + 1}/{epochs} — loss: {avg:.4f} — {time.time() - t0:.1f}s")
-            lr = self._learning_rate / (1 + 0.01 * (epoch + 1))
+            self._learning_rate / (1 + 0.01 * (epoch + 1))
         return self._history
 
     def predict(self, X: np.ndarray) -> np.ndarray:

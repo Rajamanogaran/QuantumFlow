@@ -453,12 +453,20 @@ class QuantumDense:
             ``(output_dim,)``.
         """
         if not self._built:
+            # Lazy auto-build on first call (Keras-style behavior):
+            # infer the input shape instead of requiring an explicit
+            # build() invocation.
+            try:
+                _shape = inputs[0].shape if isinstance(inputs, (list, tuple)) else inputs.shape
+                self.build(tuple(int(d) for d in _shape))
+            except Exception:
+                pass
+        if not self._built:
             raise RuntimeError(
                 "Layer has not been built. Call build(input_shape) first."
             )
 
         inputs = np.asarray(inputs, dtype=np.float64)
-        original_shape = inputs.shape
 
         # Handle single sample (1-D input)
         if inputs.ndim == 1:

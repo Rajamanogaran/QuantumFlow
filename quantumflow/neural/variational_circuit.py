@@ -40,10 +40,8 @@ Examples
 from __future__ import annotations
 
 import math
-from abc import ABC, abstractmethod
 from typing import (
     Any,
-    Callable,
     Dict,
     List,
     Optional,
@@ -55,17 +53,6 @@ from typing import (
 import numpy as np
 
 from quantumflow.core.circuit import QuantumCircuit
-from quantumflow.core.gate import (
-    CNOTGate,
-    CZGate,
-    HGate,
-    RXXGate,
-    RXGate,
-    RYYGate,
-    RYGate,
-    RZZGate,
-    RZGate,
-)
 
 __all__ = [
     "VariationalCircuit",
@@ -844,8 +831,8 @@ class HardwareEfficientAnsatz:
         params : numpy.ndarray
             Parameter array.
         """
-        n_rot_per_layer = len(self._rotation_gates) * self._n_qubits
-        edges = _get_entanglement_edges(self._n_qubits, self._entanglement)
+        len(self._rotation_gates) * self._n_qubits
+        _get_entanglement_edges(self._n_qubits, self._entanglement)
         has_ent_params = self._entangling_gate not in ("cnot", "cz")
 
         param_offset = 0
@@ -1257,7 +1244,7 @@ class VariationalCircuit:
         int
         """
         n_rot_per_layer = len(self._rotations) * self._n_qubits
-        edges = _get_entanglement_edges(self._n_qubits, self._entanglement)
+        _get_entanglement_edges(self._n_qubits, self._entanglement)
         return n_rot_per_layer * self._n_layers * self._reps
 
     def random_params(self, seed: Optional[int] = None) -> np.ndarray:
@@ -1405,7 +1392,7 @@ class VariationalCircuit:
         params : numpy.ndarray
             Flat parameter array.
         """
-        n_rot_per_layer = len(self._rotations) * self._n_qubits
+        len(self._rotations) * self._n_qubits
         offset = 0
 
         for rep in range(self._reps):
@@ -1470,7 +1457,7 @@ class VariationalCircuit:
 
         grads = np.zeros(len(param_indices), dtype=np.float64)
         base_circuit = self.circuit(x)
-        base_val = simulator.expectation(base_circuit, observable)
+        simulator.expectation(base_circuit, observable)
 
         for out_idx, pidx in enumerate(param_indices):
             # Forward shift

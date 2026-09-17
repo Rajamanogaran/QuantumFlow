@@ -6,8 +6,10 @@ Models for simulating noise in quantum circuits, including depolarizing
 noise, thermal relaxation, and configurable per-gate noise settings.
 """
 
+import itertools
+
 import numpy as np
-from typing import Optional, Dict, List, Any, Tuple, Union
+from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -183,6 +185,94 @@ class NoiseModel:
 
         return noisy
 
+    def after_gate(
+        self,
+        rho: np.ndarray,
+        gate: Any,
+        qubits: Any,
+        num_qubits: int,
+    ) -> np.ndarray:
+        """Apply this model's channel for ``gate`` acting on ``qubits``.
+
+        Called by the density-matrix backend after every gate when a
+        noise model is attached to
+        :class:`~quantumflow.simulation.simulator.DensityMatrixSimulator`.
+        ``qubits`` may be a tuple (Operation) or list; identity / no-op
+        gates are skipped.
+
+        Parameters
+        ----------
+        rho : numpy.ndarray
+            Current density matrix of all ``num_qubits`` qubits.
+        gate : Gate
+            The gate that was just applied.
+        qubits : sequence of int
+        num_qubits : int
+
+        Returns
+        -------
+        numpy.ndarray
+            The (possibly) noise-updated density matrix.
+        """
+        qubits = list(qubits)
+        if not qubits:
+            return rho
+        gate_name = getattr(gate, "name", type(gate).__name__)
+        error_prob = self.config.get_error_probability(gate_name, len(qubits))
+        if error_prob <= 0:
+            return rho
+
+        noise_type = self.config.get_noise_type(gate_name)
+        if noise_type == NoiseType.AMPLITUDE_DAMPING:
+            kraus = self._amplitude_damping_kraus(error_prob)
+        elif noise_type == NoiseType.PHASE_DAMPING:
+            kraus = self._phase_damping_kraus(error_prob)
+        elif noise_type == NoiseType.BIT_FLIP:
+            kraus = self._bit_flip_kraus(error_prob)
+        elif noise_type == NoiseType.PHASE_FLIP:
+            kraus = self._phase_flip_kraus(error_prob)
+        else:
+            kraus = self._depolarizing_kraus(error_prob, len(qubits))
+
+        embedded = [self._embed(k, qubits, num_qubits) for k in kraus]
+        out = np.zeros_like(rho)
+        for e in embedded:
+            out += e @ rho @ e.conj().T
+        return out
+
+    @classmethod
+    def _embed(cls, k: np.ndarray, qubits: List[int], n: int) -> np.ndarray:
+        """Embed a ``2**len(qubits)`` operator into the full ``2**n`` space.
+
+        Qubit 0 of the operator maps to ``qubits[0]`` (MSB-first
+        convention, matching the simulators).
+        """
+        n_gate = len(qubits)
+        dim_gate = 2 ** n_gate
+        if k.shape != (dim_gate, dim_gate):
+            raise ValueError(
+                f"Kraus operator shape {k.shape} does not match "
+                f"{n_gate} qubit(s)"
+            )
+        if n_gate == n and qubits == list(range(n)):
+            return k
+        full = np.zeros((2 ** n, 2 ** n), dtype=np.complex128)
+        for col in range(2 ** n):
+            col_bits = [(col >> (n - 1 - q)) & 1 for q in range(n)]
+            col_local = sum(
+                col_bits[q] << (n_gate - 1 - i) for i, q in enumerate(qubits)
+            )
+            for row_local in range(dim_gate):
+                coef = k[row_local, col_local]
+                if coef == 0:
+                    continue
+                row_bits = list(col_bits)
+                for i, q in enumerate(qubits):
+                    row_bits[q] = (row_local >> (n_gate - 1 - i)) & 1
+                row = sum(b << (n - 1 - q) for q, b in enumerate(row_bits))
+                full[row, col] += coef
+        return full
+
     def _add_noise_channel(
         self,
         circuit: Any,
@@ -207,18 +297,45 @@ class NoiseModel:
             kraus = self._depolarizing_kraus(error_prob, len(qubits))
 
         if hasattr(circuit, 'append_kraus'):
-            for k in kraus:
-                circuit.append_kraus(k, qubits)
+            # QuantumCircuit: attach the whole channel as one instruction
+            # (executed by the density-matrix simulator).
+            circuit.append_kraus(kraus, qubits)
 
     @staticmethod
     def _depolarizing_kraus(p: float, n_qubits: int) -> List[np.ndarray]:
-        """Kraus operators for depolarizing noise on n qubits."""
-        d = 2 ** n_qubits
-        identity = np.eye(d, dtype=np.complex128)
+        """Kraus operators for depolarizing noise on n qubits.
 
-        # Depolarizing channel: rho -> (1-p)*rho + (p/3)*(X*rho*X + Y*rho*Y + Z*rho*Z) for 1 qubit
-        # General: rho -> (1-p)*rho + p * (I*d) / d
-        return [np.sqrt(1 - p) * identity, np.sqrt(p / (d * d - 1)) * (identity - np.eye(1, d*d).reshape(d, d) + identity)]
+        With probability ``1 - p`` the state is unchanged; the
+        non-identity part applies each generalised Pauli equally:
+        ``rho -> (1-p) rho + p/(4^n - 1) sum_i W_i rho W_i^dag``.
+        Kraus operators: ``K_0 = sqrt(1-p) I`` and
+        ``K_i = sqrt(p/(4^n - 1)) W_i`` over the ``4^n - 1``
+        non-identity Weyl (generalised Pauli) operators, which satisfies
+        the completeness relation exactly.
+        (A previous version returned two operators that did not satisfy
+        the completeness relation, so the channel was not physical.)
+        """
+        d = 2 ** n_qubits
+        paulis = [
+            np.eye(2, dtype=np.complex128),
+            np.array([[0, 1], [1, 0]], dtype=np.complex128),
+            np.array([[0, -1j], [1j, 0]], dtype=np.complex128),
+            np.array([[1, 0], [0, -1]], dtype=np.complex128),
+        ]
+        # All non-identity generalised Paulis: the 4^n - 1 tensor
+        # products of I/X/Y/Z over the n qubits, excluding the identity.
+        weyls = []
+        for combo in itertools.product(range(4), repeat=n_qubits):
+            if all(c == 0 for c in combo):
+                continue
+            mat = paulis[combo[0]]
+            for c in combo[1:]:
+                mat = np.kron(mat, paulis[c])
+            weyls.append(mat)
+        kraus = [np.sqrt(1.0 - p) * np.eye(d, dtype=np.complex128)]
+        for w in weyls:
+            kraus.append(np.sqrt(p / (d * d - 1)) * w)
+        return kraus
 
     @staticmethod
     def _amplitude_damping_kraus(gamma: float) -> List[np.ndarray]:

@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
@@ -406,7 +406,7 @@ class ParameterShiftOptimizer(QuantumOptimizer):
         # Central finite differences (fallback)
         grad = np.zeros_like(params)
         eps = 1e-7
-        base_loss = loss_fn(params)
+        loss_fn(params)
         for i in range(len(params)):
             params_plus = params.copy()
             params_plus[i] += eps
@@ -807,8 +807,11 @@ class QuantumLAMB(QuantumOptimizer):
         param_norm = float(np.linalg.norm(params))
         update_norm = float(np.linalg.norm(adam_update))
 
-        # Trust ratio
-        if update_norm > _TOLERANCE:
+        # Trust ratio (|w|/|u|); fall back to 1.0 when either norm is
+        # ~0 — e.g. at the initial all-zero parameters, where a naive
+        # 0/update_norm ratio would zero the whole update and the
+        # optimizer would never move off the origin.
+        if param_norm > _TOLERANCE and update_norm > _TOLERANCE:
             trust_ratio = min(param_norm / update_norm, self._trust_ratio_clip)
         else:
             trust_ratio = 1.0
@@ -893,7 +896,7 @@ class QuantumSGD(QuantumOptimizer):
                 # Allocate shots proportionally to gradient magnitude
                 grad_magnitudes = np.abs(self._prev_grad)
                 total_mag = np.sum(grad_magnitudes) + 1e-10
-                n_params = len(params)
+                len(params)
                 shots_per_param = np.maximum(
                     (grad_magnitudes / total_mag * self._shots).astype(int),
                     self._min_shots,

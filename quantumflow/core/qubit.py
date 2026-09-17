@@ -688,7 +688,7 @@ class MultiQubitState:
             p=None,
         )
         # Weighted sampling based on marginal probabilities
-        marginals = self._marginal_probabilities(list(qubit_indices))
+        self._marginal_probabilities(list(qubit_indices))
         outcome_vals = []
         remaining_probs = probs_full.copy()
         for qi in qubit_indices:
@@ -759,7 +759,7 @@ class MultiQubitState:
             Density matrix of shape ``(2**k, 2**k)`` where ``k`` is
             the number of kept qubits.
         """
-        k = len(qubits_to_keep)
+        len(qubits_to_keep)
         full_dm = np.outer(self._amplitudes, np.conj(self._amplitudes))
         return self._partial_trace(full_dm, qubits_to_keep)
 
@@ -927,8 +927,7 @@ class MultiQubitState:
         # Col axes for kept qubits: n..2n-1 → those in `keep` + n
         row_keep = keep
         col_keep = [q + n for q in keep]
-        row_trace = trace_out
-        col_trace = [q + n for q in trace_out]
+        [q + n for q in trace_out]
 
         # Contract over trace-out qubits
         rho_reduced = np.einsum(

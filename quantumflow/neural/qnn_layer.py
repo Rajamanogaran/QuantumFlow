@@ -48,10 +48,8 @@ Examples
 from __future__ import annotations
 
 import math
-from abc import ABC, abstractmethod
 from typing import (
     Any,
-    Callable,
     Dict,
     List,
     Optional,
@@ -63,18 +61,6 @@ from typing import (
 import numpy as np
 
 from quantumflow.core.circuit import QuantumCircuit
-from quantumflow.core.gate import (
-    CNOTGate,
-    CZGate,
-    HGate,
-    RXXGate,
-    RYGate,
-    RYYGate,
-    RZGate,
-    RZZGate,
-    RXGate,
-)
-from quantumflow.core.state import Statevector
 
 __all__ = [
     "QuantumNNLayer",
@@ -353,7 +339,7 @@ class EncodingLayer:
         # We apply the left sub-encoding unconditionally since we already
         # rotated by theta to split amplitudes
         # For the right sub-encoding, apply X then encode then X
-        remaining_qubits = int(round(math.log2(len(left))))
+        int(round(math.log2(len(left))))
 
         # Encode left amplitudes
         self._amplitude_encode_recursive(circuit, left, start_qubit + 1)
@@ -555,9 +541,36 @@ class VariationalLayer:
             )
 
         if isinstance(rotation_gates, str):
-            rotation_gates = tuple(rotation_gates)
+            # Named presets, e.g. ``'rycz'`` = ("ry", "rz") — same parsing
+            # as :func:`quantumflow.neural.variational_circuit._parse_rotation_set`.
+            # An earlier implementation did ``tuple(rotation_gates)``,
+            # exploding the preset into invalid single characters.
+            preset_map = {
+                "rx": ("rx",),
+                "ry": ("ry",),
+                "rz": ("rz",),
+                "rycz": ("ry", "rz"),
+                "ryrz": ("ry", "rz"),
+                "rxyz": ("rx", "ry", "rz"),
+                "xyz": ("rx", "ry", "rz"),
+                "czrx": ("rz", "rx"),
+            }
+            if rotation_gates in preset_map:
+                rotation_gates = preset_map[rotation_gates]
+            else:
+                raise ValueError(
+                    f"Unknown rotation preset '{rotation_gates}'. "
+                    f"Choose from {sorted(preset_map.keys())} or pass a "
+                    f"tuple of gate names ('rx', 'ry', 'rz')."
+                )
         else:
             rotation_gates = tuple(rotation_gates)
+        for gate_name in rotation_gates:
+            if gate_name not in ("rx", "ry", "rz"):
+                raise ValueError(
+                    f"Unsupported rotation gate '{gate_name}'. "
+                    f"Choose from 'rx', 'ry', 'rz'."
+                )
 
         self._n_qubits = n_qubits
         self._rotation_gates = rotation_gates
@@ -1382,7 +1395,7 @@ class QuantumNNLayer:
                 observable = self._pauli_observable("z", 0, self._n_qubits)
 
         base_circuit = self.get_circuit(data)
-        base_val = simulator.expectation(base_circuit, observable)
+        simulator.expectation(base_circuit, observable)
 
         for i in range(n_params):
             params_plus = self._params.copy()

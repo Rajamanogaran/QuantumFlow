@@ -25,13 +25,13 @@ Quick Start:
     >>> result.statevector
 
 TensorFlow Integration:
-    >>> import quantumflow.tensorflow as qf_tf
     >>> import tensorflow as tf
-    >>> qnn = qf_tf.QuantumDenseLayer(4, n_qubits=2, n_layers=3)
+    >>> from quantumflow.tensorflow import QDenseLayer
+    >>> qnn = QDenseLayer(units=4, n_qubits=2, n_layers=3)
     >>> model = tf.keras.Sequential([qnn, tf.keras.layers.Dense(1)])
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __author__ = "QuantumFlow Team"
 __license__ = "Apache-2.0"
 
@@ -73,6 +73,7 @@ _simulation_names = [
 _safe_import("quantumflow.simulation.simulator",
              ["Simulator", "StatevectorSimulator", "DensityMatrixSimulator", "MPSimulator"],
              globals())
+_safe_import("quantumflow.simulation.simulator", ["BackendConfig"], globals())
 _safe_import("quantumflow.simulation.statevector", ["StatevectorBackend"], globals())
 _safe_import("quantumflow.simulation.density_matrix", ["DensityMatrixBackend"], globals())
 
