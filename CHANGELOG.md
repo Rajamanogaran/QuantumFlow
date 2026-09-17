@@ -228,9 +228,13 @@ end-to-end and every discovered defect was fixed.
   encodings, all optimizers, quantum conv/pool on character glyphs,
   activations, model zoo). Full-length training runs live in
   `examples/qml_text_classifier.py`.
-- New `tensorflow`/`keras` extra (`quantumflow[tf]`); TensorFlow is no
-  longer a hard dependency (all integration code was already lazily
-  imported).
+- `tensorflow`/`keras` are now **default dependencies** (`tensorflow>=2.16`
+  / `keras>=3.0` — the Keras 3 line the integration modules require;
+  skipped on Python >= 3.13 where TF wheels are not published, in which
+  case the package installs with pure-Python fallbacks). The
+  `quantumflow[tf]` extra remains as an alias for older install
+  instructions, and integration code stays lazily imported, so the
+  pure-Python stack still works without TF.
 
 #### Packaging
 - `pip install` from a source checkout/zip crashed with

@@ -118,27 +118,33 @@ The framework is structured around 10 tightly integrated modules, totaling over 
 # Clone or download the package
 cd quantumflow/
 
-# Install in development mode (recommended)
+# Install with ALL dependencies (core + TensorFlow/Keras)
+pip install .
+
+# Install in development mode (recommended when hacking on the source)
 pip install -e .
 
-# Install with all optional dependencies
-pip install -e ".[all]"
-
-# Install with GPU support (requires CUDA)
-pip install -e ".[gpu]"
+# Optional extras
+pip install -e ".[gpu]"    # GPU support (requires CUDA)
+pip install -e ".[dev]"    # development tools (pytest, ruff, mypy, ...)
 ```
+
+TensorFlow and Keras (>= 3) are installed **automatically** on Python
+3.9–3.12 — no extra needed. On Python >= 3.13 TensorFlow wheels are not
+published yet, so QuantumFlow installs with the pure-Python stack and
+the quantum-ML modules raise a clear "install tensorflow" message when
+used.
 
 ### Install Dependencies Separately
 
+Only needed if you want to manage the stack by hand:
+
 ```bash
 # Core dependencies
-pip install numpy scipy
+pip install numpy scipy matplotlib networkx sympy tqdm joblib opt-einsum
 
-# TensorFlow/Keras integration
+# Quantum-ML stack (installed automatically by pip install quantumflow)
 pip install tensorflow keras
-
-# Visualization
-pip install matplotlib
 
 # Development tools
 pip install pytest pytest-cov mypy ruff black
