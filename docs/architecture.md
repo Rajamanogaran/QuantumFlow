@@ -121,7 +121,7 @@ Optimizer (QuantumAdam, SPSA, etc.)
 
 Gate matrices are computed only when needed and cached:
 
-```python
+```
 class Gate:
     @functools.cached_property
     def matrix(self) -> np.ndarray:
@@ -136,7 +136,7 @@ class Gate:
 
 Simulators share a common interface:
 
-```python
+```
 class Simulator(ABC):
     @abstractmethod
     def run(self, circuit, shots, initial_state) -> SimulationResult: ...
@@ -152,7 +152,7 @@ class Simulator(ABC):
 
 All noise channels implement CPTP maps via Kraus operators:
 
-```python
+```
 class ErrorChannel(ABC):
     @abstractmethod
     def kraus_operators(self) -> List[np.ndarray]: ...
@@ -165,7 +165,7 @@ class ErrorChannel(ABC):
 
 Quantum layers follow the Keras layer protocol:
 
-```python
+```
 class QDenseLayer(tf.keras.layers.Layer):
     def build(self, input_shape):     # Create variables
     def call(self, inputs):           # Forward pass

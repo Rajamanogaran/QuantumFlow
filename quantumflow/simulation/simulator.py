@@ -88,7 +88,7 @@ def _measurements_are_terminal(circuit: QuantumCircuit) -> bool:
     comes after every gate (no gate follows any measurement)."""
     seen_measurement = False
     for op in circuit.data:
-        if isinstance(op.gate, Measurement):
+        if isinstance(getattr(op, "gate", None), Measurement):
             seen_measurement = True
         elif seen_measurement:
             return False
@@ -102,7 +102,9 @@ def _strip_terminal_measurements(circuit: QuantumCircuit) -> QuantumCircuit:
     """
     gates_only = circuit.copy()
     gates_only._data = [
-        op for op in gates_only._data if not isinstance(op.gate, Measurement)
+        op
+        for op in gates_only._data
+        if not isinstance(getattr(op, "gate", None), Measurement)
     ]
     return gates_only
 
@@ -602,12 +604,14 @@ class StatevectorSimulator(Simulator):
         memory: List[str] = []
         if shots > 0:
             has_measurements = any(
-                isinstance(op.gate, Measurement) for op in circuit.data
+                isinstance(getattr(op, "gate", None), Measurement)
+                for op in circuit.data
             )
             if has_measurements:
                 measured_qubits = sorted({
                     q for op in circuit.data
-                    if isinstance(op.gate, Measurement) for q in op.qubits
+                    if isinstance(getattr(op, "gate", None), Measurement)
+                    for q in op.qubits
                 })
                 n = circuit.num_qubits
                 if _measurements_are_terminal(circuit):
@@ -875,12 +879,14 @@ class DensityMatrixSimulator(Simulator):
         memory: List[str] = []
         if shots > 0:
             has_measurements = any(
-                isinstance(op.gate, Measurement) for op in circuit.data
+                isinstance(getattr(op, "gate", None), Measurement)
+                for op in circuit.data
             )
             if has_measurements:
                 measured_qubits = sorted({
                     q for op in circuit.data
-                    if isinstance(op.gate, Measurement) for q in op.qubits
+                    if isinstance(getattr(op, "gate", None), Measurement)
+                    for q in op.qubits
                 })
                 dim = final_rho.shape[0]
                 n = circuit.num_qubits
@@ -1513,13 +1519,15 @@ class MPSimulator(Simulator):
         memory: List[str] = []
         if shots > 0:
             has_measurements = any(
-                isinstance(op.gate, Measurement) for op in circuit.data
+                isinstance(getattr(op, "gate", None), Measurement)
+                for op in circuit.data
             )
             if has_measurements:
                 # Per-shot execution with fresh collapse each shot.
                 measured_qubits = sorted({
                     q for op in circuit.data
-                    if isinstance(op.gate, Measurement) for q in op.qubits
+                    if isinstance(getattr(op, "gate", None), Measurement)
+                    for q in op.qubits
                 })
 
                 def _run_shot() -> np.ndarray:

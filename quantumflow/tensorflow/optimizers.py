@@ -807,8 +807,11 @@ class QuantumLAMB(QuantumOptimizer):
         param_norm = float(np.linalg.norm(params))
         update_norm = float(np.linalg.norm(adam_update))
 
-        # Trust ratio
-        if update_norm > _TOLERANCE:
+        # Trust ratio (|w|/|u|); fall back to 1.0 when either norm is
+        # ~0 — e.g. at the initial all-zero parameters, where a naive
+        # 0/update_norm ratio would zero the whole update and the
+        # optimizer would never move off the origin.
+        if param_norm > _TOLERANCE and update_norm > _TOLERANCE:
             trust_ratio = min(param_norm / update_norm, self._trust_ratio_clip)
         else:
             trust_ratio = 1.0

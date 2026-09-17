@@ -67,12 +67,13 @@ print(f"Probabilities: {result.get_probabilities()}")
 # === 2. Verify Entanglement ===
 sv = result.statevector
 bell = np.array([1, 0, 0, 1]) / np.sqrt(2)
-print(f"Fidelity with |Bell>: {qf.fidelity(sv, bell):.6f}")
+bell_dm = np.outer(bell, bell.conj())
+print(f"Fidelity with |Bell>: {qf.fidelity(sv.to_density_matrix().data, bell_dm):.6f}")
 
 # === 3. Partial Trace ===
 dm = qf.DensityMatrix.from_statevector(sv)
-reduced = dm.partial_trace(keep_qubits=[0])
-print(f"Reduced state purity: {reduced.purity():.4f} (should be 0.5 for maximally entangled)")
+reduced = dm.partial_trace(qubits_to_keep=[0])
+print(f"Reduced state purity: {qf.utils.math.purity(reduced.data):.4f} (should be 0.5 for maximally entangled)")
 ```
 
 Run it:
@@ -86,8 +87,8 @@ Create a file called `hello_qnn.py`:
 
 ```python
 import numpy as np
-import tensorflow as tf
-import quantumflow.tensorflow as qf_tf
+import keras
+from quantumflow.keras.layers import KerasQDense
 
 # === 1. Generate Synthetic Data ===
 np.random.seed(42)
@@ -96,11 +97,13 @@ X = np.random.randn(n_samples, 4).astype(np.float32)
 y = ((X[:, 0] ** 2 + X[:, 1] ** 2) < 1.0).astype(np.float32)
 
 # === 2. Build Quantum-Classical Model ===
-model = tf.keras.Sequential([
-    tf.keras.layers.InputLayer(input_shape=(4,)),
-    qf_tf.QDenseLayer(8, n_qubits=4, n_layers=2, activation='quantum_relu'),
-    tf.keras.layers.Dropout(0.2),
-    tf.keras.layers.Dense(1, activation='sigmoid'),
+# The quantumflow.keras layers are real Keras 3 layers; the plain-TF
+# quantumflow.tensorflow layers are for custom training loops instead.
+model = keras.Sequential([
+    keras.Input(shape=(4,)),
+    KerasQDense(units=8, n_qubits=4, n_layers=2),
+    keras.layers.Dropout(0.2),
+    keras.layers.Dense(1, activation='sigmoid'),
 ])
 
 model.compile(
@@ -109,13 +112,12 @@ model.compile(
     metrics=['accuracy'],
 )
 
-model.summary()
-
 # === 3. Train ===
-history = model.fit(X, y, epochs=10, batch_size=32, validation_split=0.2, verbose=1)
+history = model.fit(X, y, epochs=3, batch_size=32, validation_split=0.2, verbose=0)
+print("history:", {k: [round(v, 3) for v in vs] for k, vs in history.history.items()})
 
 # === 4. Evaluate ===
-loss, accuracy = model.evaluate(X[-100:], y[-100:])
+loss, accuracy = model.evaluate(X[-100:], y[-100:], verbose=0)
 print(f"\nTest Loss: {loss:.4f}")
 print(f"Test Accuracy: {accuracy:.4f}")
 ```

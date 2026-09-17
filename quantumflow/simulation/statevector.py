@@ -63,7 +63,12 @@ try:
 except ImportError:  # pragma: no cover - extension not built
     _FAST_GATES = None
 from quantumflow.core.gate import Gate, Measurement
-from quantumflow.core.operation import Barrier, Operation, Reset
+from quantumflow.core.operation import (
+    Barrier,
+    KrausChannel,
+    Operation,
+    Reset,
+)
 from quantumflow.core.state import Statevector
 
 __all__ = [
@@ -716,6 +721,12 @@ class StatevectorBackend:
             if isinstance(op, Reset):
                 state = self._apply_reset(state, op.qubits, n)
                 continue
+            if isinstance(op, KrausChannel):
+                raise TypeError(
+                    "Kraus channels are non-unitary and cannot be applied to "
+                    "a statevector; use DensityMatrixSimulator for noisy "
+                    "circuits."
+                )
             if isinstance(op, (Operation,)):
                 if isinstance(op.gate, Measurement):
                     state = self._apply_measurement_op(state, op.qubits, n)

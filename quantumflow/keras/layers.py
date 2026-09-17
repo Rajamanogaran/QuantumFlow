@@ -1743,27 +1743,25 @@ class KerasQBatchNormalization(Layer):
         x_clipped = ops.clip(x, -1.0, 1.0)
         x_quantum = ops.arcsin(x_clipped) / (_PI / 2.0)
 
-        # Standard batch normalization
-        mean = ops.mean(x_quantum, axis=self.axis, keepdims=True)
-        var = ops.var(x_quantum, axis=self.axis, keepdims=True)
+        # Normalize per feature: reduce over every axis except ``self.axis``
+        # (for the default axis=-1 on 2-D input this is the batch axis).
+        ndim = len(x_quantum.shape)
+        axis = self.axis if self.axis >= 0 else ndim + self.axis
+        reduce_axes = tuple(i for i in range(ndim) if i != axis)
 
         if training:
-            # Update moving statistics
-            new_mean = ops.convert_to_tensor(
-                self.momentum * ops.convert_to_numpy(self._moving_mean) +
-                (1.0 - self.momentum) * ops.convert_to_numpy(mean),
-                dtype="float32",
-            )
-            new_var = ops.convert_to_tensor(
-                self.momentum * ops.convert_to_numpy(self._moving_var) +
-                (1.0 - self.momentum) * ops.convert_to_numpy(var),
-                dtype="float32",
-            )
-            self._moving_mean.assign(new_mean)
-            self._moving_var.assign(new_var)
+            mean = ops.mean(x_quantum, axis=reduce_axes)   # (F,)
+            var = ops.var(x_quantum, axis=reduce_axes)     # (F,)
+            # Update moving statistics.  Pure ops arithmetic on the backing
+            # variables — ops.convert_to_numpy() would fail here because
+            # Keras 3 traces call() under tf.function (graph mode).
+            new_mean = self.momentum * self._moving_mean + (1.0 - self.momentum) * mean
+            new_var = self.momentum * self._moving_var + (1.0 - self.momentum) * var
+            self._moving_mean.assign(ops.convert_to_tensor(new_mean, dtype="float32"))
+            self._moving_var.assign(ops.convert_to_tensor(new_var, dtype="float32"))
         else:
-            mean = ops.expand_dims(self._moving_mean, axis=self.axis)
-            var = ops.expand_dims(self._moving_var, axis=self.axis)
+            mean = ops.convert_to_tensor(self._moving_mean, dtype="float32")
+            var = ops.convert_to_tensor(self._moving_var, dtype="float32")
 
         x_norm = (x_quantum - mean) / ops.sqrt(var + self.epsilon)
 

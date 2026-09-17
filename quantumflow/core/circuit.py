@@ -551,6 +551,41 @@ class QuantumCircuit:
             self._data.append(Barrier(qubits=list(range(self.num_qubits))))
         return self
 
+    def append_kraus(
+        self,
+        kraus_ops: Sequence[np.ndarray],
+        qubits: Sequence[int],
+    ) -> QuantumCircuit:
+        """Append a general (possibly non-unitary) Kraus channel.
+
+        The channel :math:`\\rho \\mapsto \\sum_k K_k \\rho K_k^\\dagger`
+        is executed by the density-matrix simulator; the statevector and
+        MPS simulators raise an error when they encounter it.
+
+        Parameters
+        ----------
+        kraus_ops : sequence of numpy.ndarray
+            Kraus operators of shape ``(2**len(qubits), 2**len(qubits))``
+            satisfying the completeness relation.
+        qubits : sequence of int
+            Qubits the channel acts on (qubit 0 is the most significant
+            operator index).
+
+        Returns
+        -------
+        QuantumCircuit
+            self
+        """
+        from quantumflow.core.operation import KrausChannel
+
+        for q in qubits:
+            if q < 0 or q >= self.num_qubits:
+                raise ValueError(
+                    f"Qubit index {q} out of range [0, {self.num_qubits})"
+                )
+        self._data.append(KrausChannel(kraus_ops, qubits))
+        return self
+
     def reset(self, qubit: int) -> QuantumCircuit:
         """Reset a qubit to |0⟩."""
         self._data.append(Reset(qubits=qubit))

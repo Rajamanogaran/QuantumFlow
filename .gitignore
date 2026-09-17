@@ -45,3 +45,7 @@ venv/
 quantumflow/core/*.c
 quantumflow/simulation/*.c
 quantumflow/utils/*.c
+
+# doc-verification artifacts
+*.png
+.venv/

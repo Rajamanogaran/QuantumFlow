@@ -234,26 +234,29 @@ def _compute_gradient_parameter_shift(
     loss_fn: Callable[[np.ndarray], float],
     eps: float = 1e-7,
 ) -> np.ndarray:
-    """Compute parameter gradients via finite differences.
+    """Compute parameter gradients via the parameter-shift rule.
 
-    Uses parameter-shift-like central differences.
+    All trainable parameters are ``RZ``/``RY`` rotation angles, so the
+    *exact* gradient of any expectation-derived loss is
 
-    Returns
-    -------
-    numpy.ndarray
-        Gradient of same shape as params.
+        dL/dtheta_i = [L(theta_i + pi/2) - L(theta_i - pi/2)] / 2.
+
+    (An earlier implementation used central finite differences with
+    ``eps = 1e-7``; on an O(1) loss that suffers catastrophic
+    cancellation and produces noise gradients, so training stalled.)
     """
     grad = np.zeros_like(params)
+    shift = np.pi / 2.0
 
     for i in range(len(params)):
         params_plus = params.copy()
-        params_plus[i] += eps
+        params_plus[i] += shift
         params_minus = params.copy()
-        params_minus[i] -= eps
+        params_minus[i] -= shift
 
         loss_plus = loss_fn(params_plus)
         loss_minus = loss_fn(params_minus)
-        grad[i] = (loss_plus - loss_minus) / (2 * eps)
+        grad[i] = (loss_plus - loss_minus) / 2.0
 
     return grad
 
@@ -336,6 +339,13 @@ class QClassifier:
         self._m: Optional[np.ndarray] = None
         self._v: Optional[np.ndarray] = None
         self._t = 0
+        # Readout Adam state (the readout kernel/bias are trained jointly
+        # with the circuit parameters — an earlier version left the
+        # randomly initialised readout frozen, which crippled learning).
+        self._m_ro: Optional[np.ndarray] = None
+        self._v_ro: Optional[np.ndarray] = None
+        self._m_b: Optional[np.ndarray] = None
+        self._v_b: Optional[np.ndarray] = None
 
     @property
     def n_qubits(self) -> int:
@@ -379,15 +389,17 @@ class QClassifier:
             -0.1, 0.1, self._n_params
         ).astype(np.float64)
 
-        # Init readout layer
+        # Init readout layer (Xavier-style so logits start O(1), not ~0)
         if self._is_binary:
+            limit = math.sqrt(6.0 / (self._n_qubits + 1))
             self._readout_kernel = rng.uniform(
-                -0.1, 0.1, (self._n_qubits, 1)
+                -limit, limit, (self._n_qubits, 1)
             ).astype(np.float64)
             self._readout_bias = np.zeros(1, dtype=np.float64)
         else:
+            limit = math.sqrt(6.0 / (self._n_qubits + self._n_classes))
             self._readout_kernel = rng.uniform(
-                -0.1, 0.1, (self._n_qubits, self._n_classes)
+                -limit, limit, (self._n_qubits, self._n_classes)
             ).astype(np.float64)
             self._readout_bias = np.zeros(self._n_classes, dtype=np.float64)
 
@@ -395,6 +407,10 @@ class QClassifier:
         self._m = np.zeros(self._n_params, dtype=np.float64)
         self._v = np.zeros(self._n_params, dtype=np.float64)
         self._t = 0
+        self._m_ro = np.zeros_like(self._readout_kernel)
+        self._v_ro = np.zeros_like(self._readout_kernel)
+        self._m_b = np.zeros_like(self._readout_bias)
+        self._v_b = np.zeros_like(self._readout_bias)
 
         self._optimizer_name = optimizer
         self._loss_name = loss
@@ -442,6 +458,36 @@ class QClassifier:
             logits[b] = quantum_out @ self._readout_kernel + self._readout_bias
 
         return logits
+
+    def _quantum_features(
+        self, X: np.ndarray, params: Optional[np.ndarray] = None
+    ) -> np.ndarray:
+        """Run the quantum pipeline for a batch; returns ``(batch, n_qubits)``."""
+        p = params if params is not None else self._variational_params
+        X = np.asarray(X, dtype=np.float64)
+        if X.ndim == 1:
+            X = X.reshape(1, -1)
+        out = np.zeros((X.shape[0], self._n_qubits), dtype=np.float64)
+        for b in range(X.shape[0]):
+            data = self._prepare_data(X[b])
+            out[b] = _run_forward(data, p, self._n_qubits, self._n_layers, self._entanglement)
+        return out
+
+    def _update_readout(self, grad_kernel: np.ndarray, grad_bias: np.ndarray) -> None:
+        """Adam update of the readout kernel/bias (moments mirror the circuit params)."""
+        assert self._readout_kernel is not None and self._readout_bias is not None
+        beta1, beta2, eps = 0.9, 0.999, 1e-8
+        lr = self._learning_rate
+        self._m_ro = beta1 * self._m_ro + (1 - beta1) * grad_kernel
+        self._v_ro = beta2 * self._v_ro + (1 - beta2) * (grad_kernel ** 2)
+        m_hat = self._m_ro / (1 - beta1 ** self._t)
+        v_hat = self._v_ro / (1 - beta2 ** self._t)
+        self._readout_kernel -= lr * m_hat / (np.sqrt(v_hat) + eps)
+        self._m_b = beta1 * self._m_b + (1 - beta1) * grad_bias
+        self._v_b = beta2 * self._v_b + (1 - beta2) * (grad_bias ** 2)
+        m_hat_b = self._m_b / (1 - beta1 ** self._t)
+        v_hat_b = self._v_b / (1 - beta2 ** self._t)
+        self._readout_bias -= lr * m_hat_b / (np.sqrt(v_hat_b) + eps)
 
     def _prepare_data(self, x: np.ndarray) -> np.ndarray:
         """Prepare single sample for quantum encoding."""
@@ -598,8 +644,24 @@ class QClassifier:
                     loss_fn,
                 )
 
+                # Readout gradient (analytic, cheap): the classical readout
+                # is trained jointly with the circuit parameters.
+                qout = self._quantum_features(X_batch)
+                logits = qout @ self._readout_kernel + self._readout_bias
+                if self._is_binary:
+                    probs = _sigmoid(logits.reshape(-1))
+                    dlogit = (
+                        (probs - y_batch.reshape(-1)) / len(y_batch)
+                    ).reshape(-1, 1)
+                else:
+                    probs = _softmax(logits)
+                    dlogit = (probs - y_batch) / len(y_batch)
+                gk = qout.T @ dlogit
+                gb = dlogit.sum(axis=0)
+
                 # Update
                 self._update_params(grad)
+                self._update_readout(gk, gb)
 
                 # Track loss
                 batch_loss = loss_fn(self._variational_params)
@@ -793,6 +855,10 @@ class QRegressor:
         self._m: Optional[np.ndarray] = None
         self._v: Optional[np.ndarray] = None
         self._t = 0
+        self._m_ro: Optional[np.ndarray] = None
+        self._v_ro: Optional[np.ndarray] = None
+        self._m_b: Optional[np.ndarray] = None
+        self._v_b: Optional[np.ndarray] = None
 
     @property
     def n_qubits(self) -> int:
@@ -811,15 +877,52 @@ class QRegressor:
         """Compile the regressor."""
         rng = np.random.default_rng(self._random_state)
         self._variational_params = rng.uniform(-0.1, 0.1, self._n_params).astype(np.float64)
-        self._readout_kernel = rng.uniform(-0.1, 0.1, (self._n_qubits, self._n_outputs)).astype(np.float64)
+        limit = math.sqrt(6.0 / (self._n_qubits + self._n_outputs))
+        self._readout_kernel = rng.uniform(
+            -limit, limit, (self._n_qubits, self._n_outputs)
+        ).astype(np.float64)
         self._readout_bias = np.zeros(self._n_outputs, dtype=np.float64)
         self._m = np.zeros(self._n_params, dtype=np.float64)
         self._v = np.zeros(self._n_params, dtype=np.float64)
         self._t = 0
+        self._m_ro = np.zeros_like(self._readout_kernel)
+        self._v_ro = np.zeros_like(self._readout_kernel)
+        self._m_b = np.zeros_like(self._readout_bias)
+        self._v_b = np.zeros_like(self._readout_bias)
 
         self._optimizer_name = optimizer
         self._loss_name = loss
         self._compiled = True
+
+    def _quantum_features(
+        self, X: np.ndarray, params: Optional[np.ndarray] = None
+    ) -> np.ndarray:
+        """Run the quantum pipeline for a batch; returns ``(batch, n_qubits)``."""
+        p = params if params is not None else self._variational_params
+        X = np.asarray(X, dtype=np.float64)
+        if X.ndim == 1:
+            X = X.reshape(1, -1)
+        out = np.zeros((X.shape[0], self._n_qubits), dtype=np.float64)
+        for b in range(X.shape[0]):
+            data = self._prepare_data(X[b])
+            out[b] = _run_forward(data, p, self._n_qubits, self._n_layers, self._entanglement)
+        return out
+
+    def _update_readout(self, grad_kernel: np.ndarray, grad_bias: np.ndarray) -> None:
+        """Adam update of the readout kernel/bias."""
+        assert self._readout_kernel is not None and self._readout_bias is not None
+        beta1, beta2, eps = 0.9, 0.999, 1e-8
+        lr = self._learning_rate
+        self._m_ro = beta1 * self._m_ro + (1 - beta1) * grad_kernel
+        self._v_ro = beta2 * self._v_ro + (1 - beta2) * (grad_kernel ** 2)
+        m_hat = self._m_ro / (1 - beta1 ** self._t)
+        v_hat = self._v_ro / (1 - beta2 ** self._t)
+        self._readout_kernel -= lr * m_hat / (np.sqrt(v_hat) + eps)
+        self._m_b = beta1 * self._m_b + (1 - beta1) * grad_bias
+        self._v_b = beta2 * self._v_b + (1 - beta2) * (grad_bias ** 2)
+        m_hat_b = self._m_b / (1 - beta1 ** self._t)
+        v_hat_b = self._v_b / (1 - beta2 ** self._t)
+        self._readout_bias -= lr * m_hat_b / (np.sqrt(v_hat_b) + eps)
 
     def _forward_batch(self, X: np.ndarray, params: Optional[np.ndarray] = None) -> np.ndarray:
         """Forward pass returning raw predictions."""
@@ -926,7 +1029,13 @@ class QRegressor:
                     xb[0], self._variational_params,
                     self._n_qubits, self._n_layers, self._entanglement, loss_fn,
                 )
+                # Readout gradient (analytic, MSE): joint training of the
+                # classical readout with the circuit parameters.
+                qout = self._quantum_features(xb)
+                preds = qout @ self._readout_kernel + self._readout_bias
+                dlogit = 2.0 * (preds - yb) / len(yb)
                 self._update_params(grad)
+                self._update_readout(qout.T @ dlogit, dlogit.sum(axis=0))
                 losses.append(loss_fn(self._variational_params))
 
             avg_loss = float(np.mean(losses))

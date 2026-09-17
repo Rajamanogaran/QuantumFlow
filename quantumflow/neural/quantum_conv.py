@@ -473,15 +473,6 @@ class QuantumConv2D:
             except Exception:
                 pass
         if not self._built:
-            # Lazy auto-build on first call (Keras-style behavior):
-            # infer the input shape instead of requiring an explicit
-            # build() invocation.
-            try:
-                _shape = inputs[0].shape if isinstance(inputs, (list, tuple)) else inputs.shape
-                self.build(tuple(int(d) for d in _shape))
-            except Exception:
-                pass
-        if not self._built:
             raise RuntimeError("Layer has not been built.")
 
         inputs = np.asarray(inputs, dtype=np.float64)
@@ -1045,6 +1036,15 @@ class QuantumPool2D:
         -------
         numpy.ndarray
         """
+        if not self._built:
+            # Lazy auto-build on first call (Keras-style behavior):
+            # infer the input shape instead of requiring an explicit
+            # build() invocation.
+            try:
+                _shape = inputs[0].shape if isinstance(inputs, (list, tuple)) else inputs.shape
+                self.build(tuple(int(d) for d in _shape))
+            except Exception:
+                pass
         if not self._built:
             raise RuntimeError("Layer has not been built.")
 

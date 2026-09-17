@@ -113,22 +113,28 @@ class ZeroNoiseExtrapolation(ErrorMitigation):
         }
 
     def _richardson(self) -> float:
-        """Richardson extrapolation (polynomial)."""
+        """Richardson extrapolation (exact polynomial fit at zero noise).
+
+        Evaluates the degree ``n-1`` interpolating polynomial through
+        ``(x_i, y_i)`` at ``x = 0`` via Lagrange weights
+        ``w_i = prod_{j != i} (0 - x_j) / (x_i - x_j)``.
+        (A previous version computed ``prod 1/(x_i - x_j)``, dropping the
+        ``(0 - x_j)`` numerators, which returned essentially arbitrary
+        values.)
+        """
         n = len(self.noise_factors)
         if n < 2:
             return self._noisy_results[0]
 
-        # Richardson extrapolation weights
-        # For factors [1, 2, 3]: w_i = product_{j!=i} 1/(x_i - x_j)
-        x = np.array(self.noise_factors)
-        y = np.array(self._noisy_results[:n])
+        x = np.array(self.noise_factors, dtype=np.float64)
+        y = np.array(self._noisy_results[:n], dtype=np.float64)
 
         weights = np.zeros(n)
         for i in range(n):
             w = 1.0
             for j in range(n):
                 if i != j:
-                    w *= 1.0 / (x[i] - x[j])
+                    w *= (0.0 - x[j]) / (x[i] - x[j])
             weights[i] = w
 
         return float(np.dot(y, weights))

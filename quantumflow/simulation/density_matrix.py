@@ -51,7 +51,7 @@ import numpy as np
 
 from quantumflow.core.circuit import QuantumCircuit
 from quantumflow.core.gate import Gate, Measurement
-from quantumflow.core.operation import Barrier, Operation, Reset
+from quantumflow.core.operation import Barrier, KrausChannel, Operation, Reset
 from quantumflow.core.state import DensityMatrix as CoreDensityMatrix
 from quantumflow.core.state import Statevector
 
@@ -1002,6 +1002,9 @@ class DensityMatrixBackend:
                 continue
             if isinstance(op, Reset):
                 rho = self._apply_reset(rho, op.qubits, n)
+                continue
+            if isinstance(op, KrausChannel):
+                rho = self.apply_kraus(rho, op.kraus_ops, op.qubits, n)
                 continue
             if isinstance(op, Operation):
                 if isinstance(op.gate, Measurement):
